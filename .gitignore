@@ -9,6 +9,11 @@
 /build
 /dist
 
+# Go build artifacts
+/fig
+/bin
+cover.out
+
 # AI Assistants
 #  Various AI coding assistants create local cache, settings, and conversation history
 #  These contain user-specific data and should not be committed to version control

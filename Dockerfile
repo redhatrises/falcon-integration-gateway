@@ -1,20 +1,46 @@
-FROM registry.access.redhat.com/ubi9-minimal
+# Build stage — Red Hat Hardened Images Go toolchain embeds the validated
+# FIPS module in all binaries automatically.
+FROM registry.access.redhat.com/hi/go:1.26-fips AS builder
 
-USER root
-RUN : \
-    && microdnf update -y \
-    && microdnf -y install python3.11 python3.11-pip \
-    && microdnf -y clean all --enablerepo='*'
+WORKDIR /src
 
-RUN useradd --uid 1000 --create-home --home-dir /fig figuser && chmod 755 /fig
-WORKDIR /fig
+# Version metadata stamped into the binary via ldflags.
+ARG VERSION=0.0.0+dev
+ARG COMMIT=unknown
 
-COPY requirements.txt .
-RUN pip3.11 install -r ./requirements.txt
+# Download modules first so the layer is cached when only source changes.
+COPY go.mod go.sum ./
+RUN go mod download
 
-COPY . .
-RUN chown -R figuser:figuser /fig
+# Build the static binary. CGO_ENABLED=0 means the runtime stage needs no C
+# libraries. Copy cmd and internal into their own subtrees (a multi-source COPY
+# into ./ would flatten each directory's contents and lose the package paths).
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build \
+        -trimpath \
+        -ldflags "-s -w \
+            -X github.com/crowdstrike/falcon-integration-gateway/internal/version.Version=${VERSION} \
+            -X github.com/crowdstrike/falcon-integration-gateway/internal/version.Commit=${COMMIT}" \
+        -o /src/fig \
+        ./cmd/fig
 
-USER figuser
+# Runtime stage — minimal hardened base; GODEBUG runs the binary in FIPS mode.
+FROM registry.access.redhat.com/hi/core-runtime:latest
 
-CMD [ "python3.11", "-m" , "fig"]
+COPY --from=builder /src/fig /fig
+
+# Configuration is optional: all defaults live in code (viper.SetDefault), so the
+# image ships no INI file. Deployments that need overrides mount a config.ini
+# ConfigMap onto the /etc/fig search path, or pass FIG_* environment variables.
+
+# FIPS mode is off by default (GODEBUG empty). The validated FIPS module is
+# compiled into the binary regardless, so enabling it is a pure runtime toggle:
+# docker run -e GODEBUG=fips140=on ... (values: on, only).
+ENV GODEBUG=
+
+# Run as a non-root user. UID 1000 matches the Python image and the
+# securityContext in the Helm chart.
+USER 1000
+
+ENTRYPOINT ["/fig"]
