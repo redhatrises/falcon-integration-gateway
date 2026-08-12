@@ -78,7 +78,7 @@ type LoggingConfig struct {
 
 // FalconConfig is the [falcon] section.
 type FalconConfig struct {
-	CloudRegion          string `mapstructure:"cloud_region"`
+	CloudRegion          string `mapstructure:"cloud"`
 	ClientID             string `mapstructure:"client_id"`
 	ClientSecret         string `mapstructure:"client_secret"`
 	ApplicationID        string `mapstructure:"application_id"`
@@ -190,7 +190,6 @@ func Load(configPath string) (*Config, error) {
 		// extensions and infers the codec from whichever it finds.
 		v.SetConfigName("config")
 		v.AddConfigPath("/etc/fig")
-		v.AddConfigPath("./config")
 		v.AddConfigPath(".")
 		if err := v.ReadInConfig(); err != nil {
 			// Tolerate a missing config file: proceed on code defaults + env.
@@ -299,7 +298,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("logging.level", "INFO")
 
-	v.SetDefault("falcon.cloud_region", "us-1")
+	v.SetDefault("falcon.cloud", "autodiscover")
 	v.SetDefault("falcon.client_id", "")
 	v.SetDefault("falcon.client_secret", "")
 	v.SetDefault("falcon.application_id", "fig-default-app-id")
