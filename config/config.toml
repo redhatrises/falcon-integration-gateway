@@ -1,0 +1,217 @@
+# Falcon Integration Gateway — TOML configuration template.
+#
+# Every option is shown at its default value and commented out. Uncomment and
+# edit the ones you need; anything left commented falls back to the built-in
+# default (or the matching environment variable, which takes precedence over
+# this file). The file extension selects the codec, so this file is loaded as
+# long as it is named config.toml on the search path (/etc/fig or the working
+# directory) or passed via --config.
+
+[gateway]
+# Number of worker threads that process Falcon events (1-127).
+# Env: FIG_WORKER_THREADS
+#worker_threads = 4
+
+# Comma-separated backends to enable.
+# Values: AWS, AWS_SQS, AZURE, GCP, WORKSPACEONE, CLOUDTRAIL_LAKE, GENERIC
+# Env: FIG_BACKENDS
+#backends = "GENERIC"
+
+# Listen address for the /metrics, /healthz, and /readyz HTTP server
+# (e.g. ":9090"). Empty disables the server.
+# Env: FIG_METRICS_ADDR
+#metrics_addr = ""
+
+# Bounded event-channel capacity. <=0 selects worker_threads * 64.
+# Env: FIG_QUEUE_DEPTH
+#queue_depth = 0
+
+[events]
+# Minimum event severity to forward (1-5).
+# Env: EVENTS_SEVERITY_THRESHOLD
+#severity_threshold = 2
+
+# Drop events older than this many days (0-9999).
+# Env: EVENTS_OLDER_THAN_DAYS_THRESHOLD
+#older_than_days_threshold = 21
+
+# Comma-separated clouds to exclude from detection events (AWS, Azure, GCP).
+#detections_exclude_clouds = ""
+
+# Stream offset to resume from. Mutually exclusive with start_from_newest.
+# Env: EVENTS_OFFSET
+#offset = 0
+
+# Start from the newest event on the initial connection. Mutually exclusive
+# with a non-zero offset.
+# Env: EVENTS_START_FROM_NEWEST
+#start_from_newest = false
+
+# Offset store backend.
+#offset_store = "file"
+
+# Path to the file offset store.
+#offset_store_path = "offsets.json"
+
+# Delivery-failure handling mode.
+#delivery_failure = "dlq"
+
+[logging]
+# Log level (DEBUG, INFO, WARN, ERROR).
+# Env: LOG_LEVEL
+#level = "INFO"
+
+[falcon]
+# Falcon cloud region (autodiscover, us-1, us-2, us-3, eu-1, us-gov-1, us-gov-2).
+# Env: FALCON_CLOUD
+#cloud = "autodiscover"
+
+# OAuth client ID. Alternatively use FALCON_CLIENT_ID or a credentials store.
+# Env: FALCON_CLIENT_ID
+#client_id = ""
+
+# OAuth client secret. Alternatively use FALCON_CLIENT_SECRET or a credentials store.
+# Env: FALCON_CLIENT_SECRET
+#client_secret = ""
+
+# Stream application ID. Must be unique per FIG instance.
+# Env: FALCON_APPLICATION_ID
+#application_id = "fig-default-app-id"
+
+# Stream reconnect retry count (1-9999).
+# Env: FALCON_RECONNECT_RETRY_COUNT
+#reconnect_retry_count = 36
+
+# RTR quarantine keyword.
+#rtr_quarantine_keyword = "infected"
+
+[credentials_store]
+# Credential store backend (ssm, secrets_manager). Empty disables the overlay.
+# Env: CREDENTIALS_STORE
+#store = ""
+
+[ssm]
+# SSM region.
+# Env: SSM_REGION
+#region = ""
+
+# SSM parameter name for the Falcon client ID.
+# Env: SSM_CLIENT_ID
+#ssm_client_id = ""
+
+# SSM parameter name for the Falcon client secret.
+# Env: SSM_CLIENT_SECRET
+#ssm_client_secret = ""
+
+[secrets_manager]
+# Secrets Manager region.
+# Env: SECRETS_MANAGER_REGION
+#region = ""
+
+# Secrets Manager secret name.
+# Env: SECRETS_MANAGER_SECRET_NAME
+#secrets_manager_secret_name = ""
+
+# Secrets Manager key for the Falcon client ID.
+# Env: SECRETS_MANAGER_CLIENT_ID_KEY
+#secrets_manager_client_id_key = ""
+
+# Secrets Manager key for the Falcon client secret.
+# Env: SECRETS_MANAGER_CLIENT_SECRET_KEY
+#secrets_manager_client_secret_key = ""
+
+[generic]
+# Comma-separated event types for the GENERIC backend, or ALL. Common types:
+# EppDetectionSummaryEvent (detections), AuthActivityAuditEvent (audit).
+# Env: GENERIC_EVENT_TYPES
+#event_types = "ALL"
+
+[aws]
+# AWS region for Security Hub.
+# Env: AWS_REGION
+#region = ""
+
+# Confirm the EC2 instance before submitting findings.
+# Env: AWS_CONFIRM_INSTANCE
+#confirm_instance = true
+
+# Submit findings for all events, not just AWS instances.
+# Env: AWS_ACCEPT_ALL_EVENTS
+#accept_all_events = false
+
+[aws_sqs]
+# AWS region for the SQS queue.
+# Env: AWS_REGION
+#region = ""
+
+# SQS queue name.
+# Env: AWS_SQS
+#sqs_queue_name = ""
+
+[azure]
+# Log Analytics workspace ID (legacy auth).
+# Env: WORKSPACE_ID
+#workspace_id = ""
+
+# Log Analytics primary key (legacy auth).
+# Env: PRIMARY_KEY
+#primary_key = ""
+
+# Enable Azure Arc autodiscovery.
+# Env: ARC_AUTODISCOVERY
+#arc_autodiscovery = false
+
+# Azure auth method (legacy, client_secret, workload_identity).
+# Env: AZURE_AUTH_METHOD
+#auth_method = "legacy"
+
+# Azure tenant ID (client_secret auth).
+# Env: AZURE_TENANT_ID
+#tenant_id = ""
+
+# Azure client ID (client_secret auth).
+# Env: AZURE_CLIENT_ID
+#client_id = ""
+
+# Azure client secret (client_secret auth).
+# Env: AZURE_CLIENT_SECRET
+#client_secret = ""
+
+# Azure Data Collection Rule endpoint.
+# Env: AZURE_DCR_ENDPOINT
+#dcr_endpoint = ""
+
+# Azure Data Collection Rule immutable ID.
+# Env: AZURE_DCR_IMMUTABLE_ID
+#dcr_immutable_id = ""
+
+[cloudtrail_lake]
+# CloudTrail Lake channel ARN.
+# Env: CLOUDTRAIL_LAKE_CHANNEL_ARN
+#channel_arn = ""
+
+# CloudTrail Lake region. Should match the channel's region.
+# Env: CLOUDTRAIL_LAKE_REGION
+#region = ""
+
+[workspaceone]
+# Workspace ONE syslog token.
+# Env: WORKSPACEONE_TOKEN
+#token = ""
+
+# Workspace ONE syslog host.
+# Env: SYSLOG_HOST
+#syslog_host = ""
+
+# Workspace ONE syslog port (1-65534).
+# Env: SYSLOG_PORT
+#syslog_port = 6514
+
+[enrich]
+# Enrichment cache size (1-1000000).
+# Env: ENRICH_CACHE_SIZE
+#cache_size = 8192
+
+# Enrichment cache TTL (Go duration, non-negative).
+# Env: ENRICH_CACHE_TTL
+#cache_ttl = "1h"

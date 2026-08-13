@@ -173,7 +173,7 @@ You can either use the `config.ini` file or you can use environment variables.
 Create the `config.ini` file and set the following minimum values:
 
 ```ini
-[main]
+[gateway]
 backends = AWS
 
 [events]
@@ -258,7 +258,7 @@ You can either use the `config/config.ini` file or you can use environment varia
 1. Modify the `config/config.ini` file and set the following minimum values:
 
     ```ini
-    [main]
+    [gateway]
     backends = AWS
 
     [events]

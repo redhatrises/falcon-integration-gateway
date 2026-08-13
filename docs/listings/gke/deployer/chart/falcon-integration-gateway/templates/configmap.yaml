@@ -8,7 +8,7 @@ data:
   config.ini: |
     # Falcon Integration Gateway
 
-    [main]
+    [gateway]
     # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
     backends=GCP
 

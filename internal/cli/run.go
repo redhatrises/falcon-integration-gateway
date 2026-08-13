@@ -1,4 +1,4 @@
-// Package app wires the resolved configuration into a running FIG daemon: the
+// This file wires the resolved configuration into a running FIG daemon: the
 // stream supervisor (producer), the worker pipeline (consumer), an offset
 // store, the enabled backends, and an optional metrics/health HTTP server.
 //
@@ -6,7 +6,7 @@
 // StreamManagementThread, and the WorkerThreads and joined them. Here a single
 // errgroup owns the goroutine lifetimes and a signal-cancellable context drives
 // graceful shutdown.
-package app
+package cli
 
 import (
 	"context"
@@ -41,7 +41,7 @@ import (
 )
 
 // defaultQueueDepthPerWorker is the per-worker multiplier for the bounded
-// event channel when main.queue_depth is not set. A full channel blocks the
+// event channel when gateway.queue_depth is not set. A full channel blocks the
 // stream reader, which is the pipeline's backpressure signal.
 const defaultQueueDepthPerWorker = 64
 
@@ -158,9 +158,9 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, superviso
 		return nil
 	})
 
-	if cfg.Main.MetricsAddr != "" {
+	if cfg.Gateway.MetricsAddr != "" {
 		g.Go(func() error {
-			return serveMetrics(gctx, cfg.Main.MetricsAddr, logger)
+			return serveMetrics(gctx, cfg.Gateway.MetricsAddr, logger)
 		})
 	}
 
@@ -194,12 +194,12 @@ func newOffsetStore(cfg *config.Config) (offset.Store, error) {
 }
 
 // queueDepth resolves the bounded event channel capacity: the configured
-// main.queue_depth when positive, else worker_threads * defaultQueueDepthPerWorker.
+// gateway.queue_depth when positive, else worker_threads * defaultQueueDepthPerWorker.
 func queueDepth(cfg *config.Config) int {
-	if cfg.Main.QueueDepth > 0 {
-		return cfg.Main.QueueDepth
+	if cfg.Gateway.QueueDepth > 0 {
+		return cfg.Gateway.QueueDepth
 	}
-	depth := cfg.Main.WorkerThreads * defaultQueueDepthPerWorker
+	depth := cfg.Gateway.WorkerThreads * defaultQueueDepthPerWorker
 	if depth < 1 {
 		depth = defaultQueueDepthPerWorker
 	}

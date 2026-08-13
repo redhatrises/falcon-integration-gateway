@@ -371,7 +371,7 @@ func TestCloudDetectionRelevant(t *testing.T) {
 func newTestPipeline(t *testing.T, workers int, policy string, backends []backend.Backend, store offset.Store) *Pipeline {
 	t.Helper()
 	cfg := &config.Config{}
-	cfg.Main.WorkerThreads = workers
+	cfg.Gateway.WorkerThreads = workers
 	cfg.Events.DeliveryFailure = policy
 	p, err := New(cfg, backends, noopEnricher{}, store, testutil.DiscardLogger())
 	if err != nil {
@@ -598,7 +598,7 @@ func newGate2Pipeline(t *testing.T, policy string, excludeClouds []string, enric
 	t.Helper()
 	b := newFakeBackend("B", backend.AllEventTypes)
 	cfg := &config.Config{}
-	cfg.Main.WorkerThreads = 1
+	cfg.Gateway.WorkerThreads = 1
 	cfg.Events.DeliveryFailure = policy
 	cfg.DetectionsExcludeClouds = excludeClouds
 	p, err := New(cfg, []backend.Backend{b}, enricher, store, testutil.DiscardLogger())
@@ -758,7 +758,7 @@ func TestNew_Validation(t *testing.T) {
 	t.Parallel()
 	base := func() *config.Config {
 		c := &config.Config{}
-		c.Main.WorkerThreads = 4
+		c.Gateway.WorkerThreads = 4
 		c.Events.DeliveryFailure = "dlq"
 		return c
 	}
@@ -770,7 +770,7 @@ func TestNew_Validation(t *testing.T) {
 		wantErr bool
 	}{
 		{"ok", func(*config.Config) {}, offset.NewMemory(), testutil.DiscardLogger(), false},
-		{"zero workers", func(c *config.Config) { c.Main.WorkerThreads = 0 }, offset.NewMemory(), testutil.DiscardLogger(), true},
+		{"zero workers", func(c *config.Config) { c.Gateway.WorkerThreads = 0 }, offset.NewMemory(), testutil.DiscardLogger(), true},
 		{"bad policy", func(c *config.Config) { c.Events.DeliveryFailure = "nope" }, offset.NewMemory(), testutil.DiscardLogger(), true},
 		{"nil store", func(*config.Config) {}, nil, testutil.DiscardLogger(), true},
 		{"nil logger", func(*config.Config) {}, offset.NewMemory(), nil, true},
@@ -799,7 +799,7 @@ func TestNew_NilConfig(t *testing.T) {
 func TestNew_NilEnricher(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{}
-	cfg.Main.WorkerThreads = 4
+	cfg.Gateway.WorkerThreads = 4
 	cfg.Events.DeliveryFailure = "dlq"
 	if _, err := New(cfg, nil, nil, offset.NewMemory(), testutil.DiscardLogger()); err == nil {
 		t.Fatal("expected error for nil enricher")

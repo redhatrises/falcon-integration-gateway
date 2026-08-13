@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-viper/encoding/ini"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -25,7 +26,7 @@ import (
 // by viper.Unmarshal via mapstructure tags matching the "section.key" layout;
 // derived set/slice fields are computed in Load.
 type Config struct {
-	Main           MainConfig           `mapstructure:"main"`
+	Gateway        GatewayConfig        `mapstructure:"gateway"`
 	Events         EventsConfig         `mapstructure:"events"`
 	Logging        LoggingConfig        `mapstructure:"logging"`
 	Falcon         FalconConfig         `mapstructure:"falcon"`
@@ -45,8 +46,8 @@ type Config struct {
 	DetectionsExcludeClouds []string `mapstructure:"-"`
 }
 
-// MainConfig is the [main] section.
-type MainConfig struct {
+// GatewayConfig is the [gateway] section.
+type GatewayConfig struct {
 	WorkerThreads int    `mapstructure:"worker_threads"`
 	Backends      string `mapstructure:"backends"`
 	// MetricsAddr is the listen address for the /metrics, /healthz, and /readyz
@@ -163,18 +164,28 @@ type EnrichConfig struct {
 	CacheTTLDuration time.Duration `mapstructure:"-"`
 }
 
-// Load resolves configuration from defaults, an optional config file, and the
-// environment. configPath is the --config flag value; it may point to an INI,
-// JSON, TOML, or YAML file (the extension selects the codec) and viper rejects
-// an unrecognized extension. When "" it searches /etc/fig, ./config, then . for
-// a config.<ext> in any supported format. A missing config file is NOT an error
-// (pure code defaults + env is a valid configuration).
+// Load resolves configuration from defaults, an optional config file, the
+// environment, and CLI flags. configPath is the --config flag value; it may
+// point to an INI, JSON, TOML, or YAML file (the extension selects the codec)
+// and viper rejects an unrecognized extension. When "" it searches /etc/fig,
+// ./config, then . for a config.<ext> in any supported format. A missing config
+// file is NOT an error (pure code defaults + env is a valid configuration).
+//
+// flags is the cobra command's flag set (from RegisterFlags); when non-nil its
+// flags are bound so a flag set on the command line takes highest precedence
+// (flag > env > file > default). Pass nil when no flags are involved.
 //
 // Load does NOT call Validate; callers should invoke cfg.Validate() explicitly.
-func Load(configPath string) (*Config, error) {
+func Load(configPath string, flags *pflag.FlagSet) (*Config, error) {
 	v, err := newViper()
 	if err != nil {
 		return nil, err
+	}
+
+	if flags != nil {
+		if err := bindFlags(v, flags); err != nil {
+			return nil, err
+		}
 	}
 
 	if configPath != "" {
@@ -211,7 +222,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Derived fields: comma-split, trimmed. Empty string -> empty slice.
-	cfg.Backends = splitCSV(cfg.Main.Backends)
+	cfg.Backends = splitCSV(cfg.Gateway.Backends)
 	cfg.DetectionsExcludeClouds = splitCSV(cfg.Events.DetectionsExcludeClouds)
 
 	// Derived duration: parse the raw cache_ttl string. A parse failure leaves
@@ -221,136 +232,222 @@ func Load(configPath string) (*Config, error) {
 	return &cfg, nil
 }
 
-// envBinding maps a "section.key" viper path to an environment variable name.
-// Port of ENV_DEFAULTS in fig/config/__init__.py:12-53. Names are preserved
-// EXACTLY; the ordering (and the one-env->two-keys AWS_REGION case) matters.
-type envBinding struct {
-	Key string // "section.key"
-	Env string
+// setting is one row of the configuration catalog: a viper "section.key" and
+// its default, plus the optional environment variable and CLI flag that feed
+// it. It is a port of ENV_DEFAULTS/config/defaults.ini in fig/config/__init__.py,
+// consolidated so defaults, env bindings, and flags stay in lockstep. Default
+// holds a typed value (string, int, uint64, or bool); its type selects the
+// pflag registered for Flag and must match the field's mapstructure type.
+type setting struct {
+	Key     string // "section.key"
+	Flag    string // CLI long flag name; "" = no flag
+	Env     string // environment variable; "" = no env binding
+	Default any    // typed default value
+	Usage   string // --help text
+	Group   string // --help heading; must be one of groupOrder
 }
 
-// envBindings ports ENV_DEFAULTS verbatim. Note AWS_REGION binds to BOTH
-// aws.region and aws_sqs.region (one env var -> two keys).
-var envBindings = []envBinding{
-	{"main.backends", "FIG_BACKENDS"},
-	{"main.worker_threads", "FIG_WORKER_THREADS"},
-	{"main.metrics_addr", "FIG_METRICS_ADDR"},
-	{"main.queue_depth", "FIG_QUEUE_DEPTH"},
-	{"logging.level", "LOG_LEVEL"},
-	{"events.severity_threshold", "EVENTS_SEVERITY_THRESHOLD"},
-	{"events.older_than_days_threshold", "EVENTS_OLDER_THAN_DAYS_THRESHOLD"},
-	{"events.offset", "EVENTS_OFFSET"},
-	{"events.start_from_newest", "EVENTS_START_FROM_NEWEST"},
-	{"falcon.cloud", "FALCON_CLOUD"},
-	{"falcon.client_id", "FALCON_CLIENT_ID"},
-	{"falcon.client_secret", "FALCON_CLIENT_SECRET"},
-	{"falcon.reconnect_retry_count", "FALCON_RECONNECT_RETRY_COUNT"},
-	{"falcon.application_id", "FALCON_APPLICATION_ID"},
-	{"credentials_store.store", "CREDENTIALS_STORE"},
-	{"ssm.region", "SSM_REGION"},
-	{"ssm.ssm_client_id", "SSM_CLIENT_ID"},
-	{"ssm.ssm_client_secret", "SSM_CLIENT_SECRET"},
-	{"secrets_manager.region", "SECRETS_MANAGER_REGION"},
-	{"secrets_manager.secrets_manager_secret_name", "SECRETS_MANAGER_SECRET_NAME"},
-	{"secrets_manager.secrets_manager_client_id_key", "SECRETS_MANAGER_CLIENT_ID_KEY"},
-	{"secrets_manager.secrets_manager_client_secret_key", "SECRETS_MANAGER_CLIENT_SECRET_KEY"},
-	{"azure.workspace_id", "WORKSPACE_ID"},
-	{"azure.primary_key", "PRIMARY_KEY"},
-	{"azure.arc_autodiscovery", "ARC_AUTODISCOVERY"},
-	{"azure.auth_method", "AZURE_AUTH_METHOD"},
-	{"azure.tenant_id", "AZURE_TENANT_ID"},
-	{"azure.client_id", "AZURE_CLIENT_ID"},
-	{"azure.client_secret", "AZURE_CLIENT_SECRET"},
-	{"azure.dcr_endpoint", "AZURE_DCR_ENDPOINT"},
-	{"azure.dcr_immutable_id", "AZURE_DCR_IMMUTABLE_ID"},
-	{"aws.region", "AWS_REGION"},
-	{"aws.confirm_instance", "AWS_CONFIRM_INSTANCE"},
-	{"aws.accept_all_events", "AWS_ACCEPT_ALL_EVENTS"},
-	{"aws_sqs.region", "AWS_REGION"}, // one env var -> two keys
-	{"aws_sqs.sqs_queue_name", "AWS_SQS"},
-	{"workspaceone.token", "WORKSPACEONE_TOKEN"},
-	{"workspaceone.syslog_host", "SYSLOG_HOST"},
-	{"workspaceone.syslog_port", "SYSLOG_PORT"},
-	{"cloudtrail_lake.channel_arn", "CLOUDTRAIL_LAKE_CHANNEL_ARN"},
-	{"cloudtrail_lake.region", "CLOUDTRAIL_LAKE_REGION"},
-	{"generic.event_types", "GENERIC_EVENT_TYPES"},
-	{"enrich.cache_size", "ENRICH_CACHE_SIZE"},
-	{"enrich.cache_ttl", "ENRICH_CACHE_TTL"},
+// Flag-group headings for --help. groupOrder fixes their display order; every
+// setting that defines a Flag must name one of these in its Group field.
+const (
+	groupGateway        = "Gateway & Runtime"
+	groupEvents         = "Event Filtering & Offsets"
+	groupFalcon         = "Falcon API"
+	groupExternalStores = "Credential Stores"
+	groupBackends       = "Backends"
+	groupEnrich         = "Enrichment"
+)
+
+var groupOrder = []string{groupGateway, groupEvents, groupFalcon, groupExternalStores, groupBackends, groupEnrich}
+
+// settings is the single source of truth for FIG configuration. Env var names
+// are preserved EXACTLY from the Python port; note AWS_REGION binds to BOTH
+// aws.region and aws_sqs.region (one env var -> two keys), expressed here as two
+// rows. --config is not listed: it selects the config file rather than a key.
+// The Group column places each flag under a --help heading (see groupOrder).
+var settings = []setting{
+	// [gateway]
+	{"gateway.worker_threads", "worker-threads", "FIG_WORKER_THREADS", 4, "number of worker threads", groupGateway},
+	{"gateway.backends", "backends", "FIG_BACKENDS", "GENERIC", "comma-separated list of backends to enable", groupGateway},
+	{"gateway.metrics_addr", "metrics-addr", "FIG_METRICS_ADDR", "", "listen address for the /metrics, /healthz, /readyz HTTP server", groupGateway},
+	{"gateway.queue_depth", "queue-depth", "FIG_QUEUE_DEPTH", 0, "bounded event-channel capacity", groupGateway},
+
+	// [events]
+	{"events.severity_threshold", "severity-threshold", "EVENTS_SEVERITY_THRESHOLD", 2, "minimum event severity to forward", groupEvents},
+	{"events.older_than_days_threshold", "older-than-days-threshold", "EVENTS_OLDER_THAN_DAYS_THRESHOLD", 21, "drop events older than this many days", groupEvents},
+	{"events.detections_exclude_clouds", "detections-exclude-clouds", "", "", "comma-separated clouds to exclude from detection events", groupEvents},
+	{"events.offset", "offset", "EVENTS_OFFSET", uint64(0), "stream offset to resume from (mutually exclusive with start_from_newest)", groupEvents},
+	{"events.start_from_newest", "start-from-newest", "EVENTS_START_FROM_NEWEST", false, "start from the newest event on the initial connection", groupEvents},
+	{"events.offset_store", "offset-store", "", "file", "offset store backend", groupEvents},
+	{"events.offset_store_path", "offset-store-path", "", "offsets.json", "path to the file offset store", groupEvents},
+	{"events.delivery_failure", "delivery-failure", "", "dlq", "delivery-failure handling mode", groupEvents},
+
+	// [logging]
+	{"logging.level", "log-level", "LOG_LEVEL", "INFO", "log level", groupGateway},
+
+	// [falcon]
+	{"falcon.cloud", "falcon-cloud", "FALCON_CLOUD", "autodiscover", "Falcon cloud region", groupFalcon},
+	{"falcon.client_id", "falcon-client-id", "FALCON_CLIENT_ID", "", "Falcon API client ID", groupFalcon},
+	{"falcon.client_secret", "falcon-client-secret", "FALCON_CLIENT_SECRET", "", "Falcon API client secret", groupFalcon},
+	{"falcon.application_id", "falcon-application-id", "FALCON_APPLICATION_ID", "fig-default-app-id", "Falcon stream application ID", groupFalcon},
+	{"falcon.reconnect_retry_count", "falcon-reconnect-retry-count", "FALCON_RECONNECT_RETRY_COUNT", 36, "stream reconnect retry count", groupFalcon},
+	{"falcon.rtr_quarantine_keyword", "falcon-rtr-quarantine-keyword", "", "infected", "RTR quarantine keyword", groupFalcon},
+
+	// [credentials_store]
+	{"credentials_store.store", "credentials-store", "CREDENTIALS_STORE", "", "credential store backend", groupExternalStores},
+
+	// [ssm]
+	{"ssm.region", "aws-ssm-region", "SSM_REGION", "", "AWS SSM region", groupExternalStores},
+	{"ssm.ssm_client_id", "aws-ssm-client-id", "SSM_CLIENT_ID", "", "AWS SSM parameter name for the Falcon client ID", groupExternalStores},
+	{"ssm.ssm_client_secret", "aws-ssm-client-secret", "SSM_CLIENT_SECRET", "", "AWS SSM parameter name for the Falcon client secret", groupExternalStores},
+
+	// [secrets_manager]
+	{"secrets_manager.region", "secrets-manager-region", "SECRETS_MANAGER_REGION", "", "AWS Secrets Manager region", groupExternalStores},
+	{"secrets_manager.secrets_manager_secret_name", "secrets-manager-secret-name", "SECRETS_MANAGER_SECRET_NAME", "", "AWS Secrets Manager secret name", groupExternalStores},
+	{"secrets_manager.secrets_manager_client_id_key", "secrets-manager-client-id-key", "SECRETS_MANAGER_CLIENT_ID_KEY", "", "AWS Secrets Manager key for the Falcon client ID", groupExternalStores},
+	{"secrets_manager.secrets_manager_client_secret_key", "secrets-manager-client-secret-key", "SECRETS_MANAGER_CLIENT_SECRET_KEY", "", "AWS Secrets Manager key for the Falcon client secret", groupExternalStores},
+
+	// [generic]
+	{"generic.event_types", "generic-event-types", "GENERIC_EVENT_TYPES", "ALL", "comma-separated event types for the GENERIC backend, or ALL", groupBackends},
+
+	// [aws]
+	{"aws.region", "aws-region", "AWS_REGION", "", "AWS region for Security Hub", groupBackends},
+	{"aws.confirm_instance", "aws-confirm-instance", "AWS_CONFIRM_INSTANCE", true, "confirm the EC2 instance before submitting findings", groupBackends},
+	{"aws.accept_all_events", "aws-accept-all-events", "AWS_ACCEPT_ALL_EVENTS", false, "submit findings for all events, not just AWS instances", groupBackends},
+
+	// [aws_sqs]
+	{"aws_sqs.region", "aws-sqs-region", "AWS_REGION", "", "AWS region for the SQS queue", groupBackends}, // AWS_REGION -> two keys
+	{"aws_sqs.sqs_queue_name", "aws-sqs-queue-name", "AWS_SQS", "", "AWS SQS queue name", groupBackends},
+
+	// [azure]
+	{"azure.workspace_id", "azure-workspace-id", "WORKSPACE_ID", "", "Azure Log Analytics workspace ID (legacy auth)", groupBackends},
+	{"azure.primary_key", "azure-primary-key", "PRIMARY_KEY", "", "Azure Log Analytics primary key (legacy auth)", groupBackends},
+	{"azure.arc_autodiscovery", "azure-arc-autodiscovery", "ARC_AUTODISCOVERY", false, "enable Azure Arc autodiscovery", groupBackends},
+	{"azure.auth_method", "azure-auth-method", "AZURE_AUTH_METHOD", "legacy", "Azure auth method", groupBackends},
+	{"azure.tenant_id", "azure-tenant-id", "AZURE_TENANT_ID", "", "Azure tenant ID", groupBackends},
+	{"azure.client_id", "azure-client-id", "AZURE_CLIENT_ID", "", "Azure client ID", groupBackends},
+	{"azure.client_secret", "azure-client-secret", "AZURE_CLIENT_SECRET", "", "Azure client secret", groupBackends},
+	{"azure.dcr_endpoint", "azure-dcr-endpoint", "AZURE_DCR_ENDPOINT", "", "Azure Data Collection Rule endpoint", groupBackends},
+	{"azure.dcr_immutable_id", "azure-dcr-immutable-id", "AZURE_DCR_IMMUTABLE_ID", "", "Azure Data Collection Rule immutable ID", groupBackends},
+
+	// [cloudtrail_lake]
+	{"cloudtrail_lake.channel_arn", "cloudtrail-lake-channel-arn", "CLOUDTRAIL_LAKE_CHANNEL_ARN", "", "AWS CloudTrail Lake channel ARN", groupBackends},
+	{"cloudtrail_lake.region", "cloudtrail-lake-region", "CLOUDTRAIL_LAKE_REGION", "", "AWS CloudTrail Lake region", groupBackends},
+
+	// [workspaceone]
+	{"workspaceone.token", "workspaceone-token", "WORKSPACEONE_TOKEN", "", "Workspace ONE syslog token", groupBackends},
+	{"workspaceone.syslog_host", "workspaceone-syslog-host", "SYSLOG_HOST", "", "Workspace ONE syslog host", groupBackends},
+	{"workspaceone.syslog_port", "workspaceone-syslog-port", "SYSLOG_PORT", 6514, "Workspace ONE syslog port", groupBackends},
+
+	// [enrich]
+	{"enrich.cache_size", "enrich-cache-size", "ENRICH_CACHE_SIZE", 8192, "enrichment cache size", groupEnrich},
+	{"enrich.cache_ttl", "enrich-cache-ttl", "ENRICH_CACHE_TTL", "1h", "enrichment cache TTL", groupEnrich},
 }
 
-// setDefaults registers every default value. Port of config/defaults.ini —
-// defaults now live in code (viper's lowest precedence), replacing the shipped
-// defaults.ini per the approved plan.
+// setDefaults registers every default value as viper's lowest-precedence layer.
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("main.worker_threads", 4)
-	v.SetDefault("main.backends", "GENERIC")
-	v.SetDefault("main.metrics_addr", "")
-	v.SetDefault("main.queue_depth", 0)
-
-	v.SetDefault("events.severity_threshold", 2)
-	v.SetDefault("events.older_than_days_threshold", 21)
-	v.SetDefault("events.detections_exclude_clouds", "")
-	v.SetDefault("events.offset", 0)
-	v.SetDefault("events.start_from_newest", false)
-	v.SetDefault("events.offset_store", "file")
-	v.SetDefault("events.offset_store_path", "offsets.json")
-	v.SetDefault("events.delivery_failure", "dlq")
-
-	v.SetDefault("logging.level", "INFO")
-
-	v.SetDefault("falcon.cloud", "autodiscover")
-	v.SetDefault("falcon.client_id", "")
-	v.SetDefault("falcon.client_secret", "")
-	v.SetDefault("falcon.application_id", "fig-default-app-id")
-	v.SetDefault("falcon.reconnect_retry_count", 36)
-	v.SetDefault("falcon.rtr_quarantine_keyword", "infected")
-
-	v.SetDefault("credentials_store.store", "")
-
-	v.SetDefault("generic.event_types", "ALL")
-
-	v.SetDefault("aws.confirm_instance", true)
-	v.SetDefault("aws.accept_all_events", false)
-	v.SetDefault("aws.region", "")
-
-	v.SetDefault("aws_sqs.region", "")
-	v.SetDefault("aws_sqs.sqs_queue_name", "")
-
-	v.SetDefault("azure.arc_autodiscovery", false)
-	v.SetDefault("azure.auth_method", "legacy")
-	v.SetDefault("azure.workspace_id", "")
-	v.SetDefault("azure.primary_key", "")
-	v.SetDefault("azure.tenant_id", "")
-	v.SetDefault("azure.client_id", "")
-	v.SetDefault("azure.client_secret", "")
-	v.SetDefault("azure.dcr_endpoint", "")
-	v.SetDefault("azure.dcr_immutable_id", "")
-
-	v.SetDefault("cloudtrail_lake.channel_arn", "")
-	v.SetDefault("cloudtrail_lake.region", "")
-
-	v.SetDefault("workspaceone.token", "")
-	v.SetDefault("workspaceone.syslog_host", "")
-	v.SetDefault("workspaceone.syslog_port", 6514)
-
-	v.SetDefault("ssm.region", "")
-	v.SetDefault("ssm.ssm_client_id", "")
-	v.SetDefault("ssm.ssm_client_secret", "")
-
-	v.SetDefault("secrets_manager.region", "")
-	v.SetDefault("secrets_manager.secrets_manager_secret_name", "")
-	v.SetDefault("secrets_manager.secrets_manager_client_id_key", "")
-	v.SetDefault("secrets_manager.secrets_manager_client_secret_key", "")
-
-	v.SetDefault("enrich.cache_size", 8192)
-	v.SetDefault("enrich.cache_ttl", "1h")
+	for _, s := range settings {
+		v.SetDefault(s.Key, s.Default)
+	}
 }
 
 // bindEnv registers explicit per-key env bindings. Explicit binds (not
 // AutomaticEnv) preserve the exact env var names and the one-env->two-keys case.
 func bindEnv(v *viper.Viper) error {
-	for _, b := range envBindings {
-		if err := v.BindEnv(b.Key, b.Env); err != nil {
+	for _, s := range settings {
+		if s.Env == "" {
+			continue
+		}
+		if err := v.BindEnv(s.Key, s.Env); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// NamedFlagSet pairs a --help heading with the flags shown under it. The order
+// of the slice returned by RegisterFlags is the display order (see groupOrder).
+type NamedFlagSet struct {
+	Name    string
+	FlagSet *pflag.FlagSet
+}
+
+// registerFlag declares a single pflag on fs using the setting's typed default,
+// so --help reports the real default and viper's BindPFlag can resolve
+// precedence. Settings with no Flag are skipped by the caller.
+func registerFlag(fs *pflag.FlagSet, s setting) {
+	switch d := s.Default.(type) {
+	case string:
+		fs.String(s.Flag, d, s.Usage)
+	case int:
+		fs.Int(s.Flag, d, s.Usage)
+	case uint64:
+		fs.Uint64(s.Flag, d, s.Usage)
+	case bool:
+		fs.Bool(s.Flag, d, s.Usage)
+	}
+}
+
+// RegisterFlags declares a CLI flag for every setting that defines one and adds
+// it to fs, so viper's BindPFlag resolves precedence to flag > env > file >
+// default. Flags are also collected into per-group flag sets (in groupOrder,
+// preserving catalog order within each group) and returned so the caller can
+// render grouped --help output. Any flag whose Group is not in groupOrder lands
+// in a trailing catch-all group so it is never silently dropped; a unit test
+// guards against that happening.
+func RegisterFlags(fs *pflag.FlagSet) []NamedFlagSet {
+	const catchAll = "Other Flags"
+
+	byName := make(map[string]*pflag.FlagSet, len(groupOrder)+1)
+	order := append([]string(nil), groupOrder...)
+	group := func(name string) *pflag.FlagSet {
+		set, ok := byName[name]
+		if !ok {
+			set = pflag.NewFlagSet(name, pflag.ContinueOnError)
+			set.SortFlags = false
+			byName[name] = set
+			if name == catchAll {
+				order = append(order, catchAll)
+			}
+		}
+		return set
+	}
+	for _, name := range groupOrder {
+		group(name)
+	}
+
+	for _, s := range settings {
+		if s.Flag == "" {
+			continue
+		}
+		name := s.Group
+		if _, known := byName[name]; !known || name == "" {
+			name = catchAll
+		}
+		registerFlag(group(name), s)
+	}
+
+	groups := make([]NamedFlagSet, 0, len(order))
+	for _, name := range order {
+		set := byName[name]
+		fs.AddFlagSet(set)
+		groups = append(groups, NamedFlagSet{Name: name, FlagSet: set})
+	}
+	return groups
+}
+
+// bindFlags binds each setting's registered flag to its viper key so a flag set
+// on the command line overrides env, file, and default values.
+func bindFlags(v *viper.Viper, fs *pflag.FlagSet) error {
+	for _, s := range settings {
+		if s.Flag == "" {
+			continue
+		}
+		flag := fs.Lookup(s.Flag)
+		if flag == nil {
+			continue
+		}
+		if err := v.BindPFlag(s.Key, flag); err != nil {
 			return err
 		}
 	}

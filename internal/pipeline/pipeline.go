@@ -117,7 +117,7 @@ func New(cfg *config.Config, backends []backend.Backend, enricher events.Enriche
 		return nil, fmt.Errorf("pipeline: nil logger")
 	}
 
-	workers := cfg.Main.WorkerThreads
+	workers := cfg.Gateway.WorkerThreads
 	if workers < 1 {
 		return nil, fmt.Errorf("pipeline: worker_threads must be >= 1, got %d", workers)
 	}

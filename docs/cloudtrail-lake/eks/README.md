@@ -128,7 +128,7 @@ file.
   ```bash
   # Falcon Integration Gateway
 
-  [main]
+  [gateway]
   # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
   backends=CLOUDTRAIL_LAKE
 
@@ -152,7 +152,7 @@ file.
   application_id = fig-int-1
 
   [cloudtrail_lake]
-  # AWS CloudTrail Lake section is applicable only when CLOUDTRAIL_LAKE backend is enabled in the [main] section.
+  # AWS CloudTrail Lake section is applicable only when CLOUDTRAIL_LAKE backend is enabled in the [gateway] section.
 
   # Uncomment to provide the Channel ARN. Alternatively, use CLOUDTRAIL_LAKE_CHANNEL_ARN env variable.
   channel_arn = arn:aws:cloudtrail:us-east-1:EXAMPLE:channel/EXAMPLE-9f94-471c-96ba-EXAMPLE

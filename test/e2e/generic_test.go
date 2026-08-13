@@ -8,7 +8,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/crowdstrike/falcon-integration-gateway/internal/app"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/cli"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
 )
 
@@ -30,7 +30,7 @@ var _ = Describe("GENERIC backend against a live tenant", Label("live"), func() 
 		Expect(os.Setenv("FIG_BACKENDS", "GENERIC")).To(Succeed())
 		GinkgoT().Setenv("EVENTS_OFFSET_STORE", "memory")
 
-		cfg, err := config.Load("")
+		cfg, err := config.Load("", nil)
 		Expect(err).NotTo(HaveOccurred())
 		cfg.Events.OffsetStore = "memory"
 		Expect(cfg.Validate()).To(Succeed())
@@ -41,7 +41,7 @@ var _ = Describe("GENERIC backend against a live tenant", Label("live"), func() 
 		// Run blocks until the context deadline cancels it; a graceful shutdown
 		// returns nil.
 		done := make(chan error, 1)
-		go func() { done <- app.Run(ctx, cfg) }()
+		go func() { done <- cli.Run(ctx, cfg) }()
 
 		select {
 		case err := <-done:

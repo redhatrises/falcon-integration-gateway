@@ -1,0 +1,79 @@
+{
+  "gateway": {
+    "worker_threads": 4,
+    "backends": "GENERIC",
+    "metrics_addr": "",
+    "queue_depth": 0
+  },
+  "events": {
+    "severity_threshold": 2,
+    "older_than_days_threshold": 21,
+    "detections_exclude_clouds": "",
+    "offset": 0,
+    "start_from_newest": false,
+    "offset_store": "file",
+    "offset_store_path": "offsets.json",
+    "delivery_failure": "dlq"
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "falcon": {
+    "cloud": "autodiscover",
+    "client_id": "",
+    "client_secret": "",
+    "application_id": "fig-default-app-id",
+    "reconnect_retry_count": 36,
+    "rtr_quarantine_keyword": "infected"
+  },
+  "credentials_store": {
+    "store": ""
+  },
+  "ssm": {
+    "region": "",
+    "ssm_client_id": "",
+    "ssm_client_secret": ""
+  },
+  "secrets_manager": {
+    "region": "",
+    "secrets_manager_secret_name": "",
+    "secrets_manager_client_id_key": "",
+    "secrets_manager_client_secret_key": ""
+  },
+  "generic": {
+    "event_types": "ALL"
+  },
+  "aws": {
+    "region": "",
+    "confirm_instance": true,
+    "accept_all_events": false
+  },
+  "aws_sqs": {
+    "region": "",
+    "sqs_queue_name": ""
+  },
+  "azure": {
+    "workspace_id": "",
+    "primary_key": "",
+    "arc_autodiscovery": false,
+    "auth_method": "legacy",
+    "tenant_id": "",
+    "client_id": "",
+    "client_secret": "",
+    "dcr_endpoint": "",
+    "dcr_immutable_id": ""
+  },
+  "cloudtrail_lake": {
+    "channel_arn": "",
+    "region": ""
+  },
+  "workspaceone": {
+    "token": "",
+    "syslog_host": "",
+    "syslog_port": 6514
+  },
+  "enrich": {
+    "cache_size": 8192,
+    "cache_ttl": "1h"
+  }
+}

@@ -26,7 +26,7 @@ data:
   config.ini: |
     # Falcon Integration Gateway
 
-    [main]
+    [gateway]
     # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
     backends=GCP
 
@@ -58,7 +58,7 @@ data:
     #application_id = my-acme-gcp-1
 
     [gcp]
-    # GCP section is applicable only when GCP backend is enabled in the [main] section.
+    # GCP section is applicable only when GCP backend is enabled in the [gateway] section.
 
     # Use GOOGLE_APPLICATION_CREDENTIALS env variable to configure GCP Backend. GOOGLE_APPLICATION_CREDENTIALS
     # is an environment variable used to configure GCP Service accounts, it should point out to the credentials

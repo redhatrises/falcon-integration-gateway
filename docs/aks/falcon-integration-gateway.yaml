@@ -75,7 +75,7 @@ data:
   config.ini: |
     # Falcon Integration Gateway
 
-    [main]
+    [gateway]
     # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
     backends=AZURE
 
@@ -110,7 +110,7 @@ data:
     #application_id = my-acme-azure-1
 
     [azure]
-    # Azure section is applicable only when AZURE backend is enabled in the [main] section.
+    # Azure section is applicable only when AZURE backend is enabled in the [gateway] section.
 
     # Uncomment to provide Azure Workspace ID. Alternatively, use WORKSPACE_ID env variable.
     #workspace_id =

@@ -33,7 +33,7 @@ data:
   config.ini: |
     # Falcon Integration Gateway
 
-    [main]
+    [gateway]
     # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
     backends=CLOUDTRAIL_LAKE
 
@@ -57,7 +57,7 @@ data:
     #application_id = changeme
 
     [cloudtrail_lake]
-    # AWS CloudTrail Lake section is applicable only when CLOUDTRAIL_LAKE backend is enabled in the [main] section.
+    # AWS CloudTrail Lake section is applicable only when CLOUDTRAIL_LAKE backend is enabled in the [gateway] section.
 
     # Uncomment to provide the Channel ARN. Alternatively, use CLOUDTRAIL_LAKE_CHANNEL_ARN env variable.
     #channel_arn =
