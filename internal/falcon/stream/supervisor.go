@@ -15,6 +15,7 @@ import (
 	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 )
 
 // noStreamsRetryInterval is how long listStreams waits between attempts when
@@ -152,7 +153,7 @@ func (s *Supervisor) Run(ctx context.Context, out chan<- *events.Event) error {
 			s.cfg.Logger.Info("stream session closed; rebuilding")
 		}
 
-		if !sleepContext(ctx, bo.NextBackOff()) {
+		if !utils.Sleep(ctx, bo.NextBackOff()) {
 			return ctx.Err()
 		}
 	}
@@ -217,7 +218,7 @@ func (s *Supervisor) listStreams(ctx context.Context) ([]client.Stream, error) {
 		}
 		s.cfg.Logger.Info("Falcon returned no available streams; retrying",
 			"retry_in", noStreamsRetryInterval, "attempt", attempt+1, "max_attempts", retries)
-		if !sleepContext(ctx, noStreamsRetryInterval) {
+		if !utils.Sleep(ctx, noStreamsRetryInterval) {
 			return nil, ctx.Err()
 		}
 	}
@@ -339,20 +340,4 @@ func newReconnectBackOff() *backoff.ExponentialBackOff {
 	bo.MaxInterval = reconnectMaxInterval
 	bo.Reset()
 	return bo
-}
-
-// sleepContext waits for d or until ctx is cancelled. It returns true if the
-// full duration elapsed and false if ctx was cancelled first.
-func sleepContext(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }

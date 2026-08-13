@@ -25,18 +25,18 @@ import (
 	// Blank-import each backend so its init() registers a Constructor with the
 	// backend registry before backend.Build looks names up. Add a line here
 	// when introducing a new backend package.
-	_ "github.com/crowdstrike/falcon-integration-gateway/internal/backend/generic"
-	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
-
 	"github.com/crowdstrike/falcon-integration-gateway/internal/backend"
+	_ "github.com/crowdstrike/falcon-integration-gateway/internal/backend/generic"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/enrich"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/stream"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/logging"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/offset"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/pipeline"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/version"
 )
 
@@ -143,7 +143,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, superviso
 	// failure of the daemon.
 	g.Go(func() error {
 		defer close(events)
-		if err := supervisor.Run(gctx, events); err != nil && !isShutdown(err) {
+		if err := supervisor.Run(gctx, events); err != nil && !utils.IsCanceled(err) {
 			return fmt.Errorf("app: stream supervisor: %w", err)
 		}
 		return nil
@@ -204,12 +204,6 @@ func queueDepth(cfg *config.Config) int {
 		depth = defaultQueueDepthPerWorker
 	}
 	return depth
-}
-
-// isShutdown reports whether err is a context cancellation/deadline, i.e. the
-// graceful-shutdown signal rather than a fatal fault.
-func isShutdown(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // closeBackends flushes any backend that implements backend.Closer. Errors are

@@ -29,6 +29,22 @@ func malformedf(format string, args ...any) error {
 	return fmt.Errorf("malformed configuration: "+format, args...)
 }
 
+// field is a named value checked by appendIfEmpty.
+type field struct{ name, val string }
+
+// appendIfEmpty appends msg(f.name) for each field whose value is blank,
+// returning the extended slice. It unifies the per-backend and per-auth-method
+// "must be non-empty" checks; the only per-site difference is the message text,
+// supplied by msg.
+func appendIfEmpty(errs []error, msg func(name string) error, fields ...field) []error {
+	for _, f := range fields {
+		if f.val == "" {
+			errs = append(errs, msg(f.name))
+		}
+	}
+	return errs
+}
+
 // Validate ports every branch of validate()/validate_falcon()/validate_events()/
 // validate_backends() (fig/config/__init__.py:142-238). Unlike the Python code
 // (which fails on the first error), it accumulates ALL problems with
@@ -68,7 +84,7 @@ func (c *Config) validateEvents() []error {
 
 	for _, cloud := range c.DetectionsExcludeClouds {
 		if !slices.Contains(sensorRecognizedClouds, cloud) {
-			errs = append(errs, malformedf("expected detections_exclude_clouds to be a subset of {AWS, Azure, GCP, unrecognized}, got %q", cloud))
+			errs = append(errs, malformedf("expected detections_exclude_clouds to be a subset of {%s}, got %q", strings.Join(sensorRecognizedClouds, ", "), cloud))
 		}
 	}
 
@@ -96,46 +112,35 @@ func (c *Config) validateBackends() []error {
 	}
 	for _, b := range c.Backends {
 		if !slices.Contains(validBackendNames, b) {
-			errs = append(errs, malformedf("unrecognized backend %q; expected a subset of {AWS, AWS_SQS, AZURE, GCP, WORKSPACEONE, CLOUDTRAIL_LAKE, GENERIC}", b))
+			errs = append(errs, malformedf("unrecognized backend %q; expected a subset of {%s}", b, strings.Join(validBackendNames, ", ")))
 		}
 	}
 
-	// requireNonEmpty appends a "<key> to be non-empty" error for each blank
-	// field, matching the per-backend checks in validate_backends().
-	requireNonEmpty := func(fields []struct{ key, val string }) {
-		for _, f := range fields {
-			if f.val == "" {
-				errs = append(errs, malformedf("expected %s to be non-empty", f.key))
-			}
-		}
-	}
+	// nonEmpty is the message builder for the per-backend "must be non-empty"
+	// checks in validate_backends().
+	nonEmpty := func(name string) error { return malformedf("expected %s to be non-empty", name) }
 
 	if slices.Contains(c.Backends, "AWS") {
-		requireNonEmpty([]struct{ key, val string }{
-			{"AWS region", c.AWS.Region},
-		})
+		errs = appendIfEmpty(errs, nonEmpty, field{"AWS region", c.AWS.Region})
 		// confirm_instance / accept_all_events are typed bools; no string check needed.
 	}
 	if slices.Contains(c.Backends, "AWS_SQS") {
-		requireNonEmpty([]struct{ key, val string }{
-			{"AWS_SQS region", c.AWSSQS.Region},
-			{"AWS_SQS sqs_queue_name", c.AWSSQS.SQSQueueName},
-		})
+		errs = appendIfEmpty(errs, nonEmpty,
+			field{"AWS_SQS region", c.AWSSQS.Region},
+			field{"AWS_SQS sqs_queue_name", c.AWSSQS.SQSQueueName})
 	}
 	if slices.Contains(c.Backends, "WORKSPACEONE") {
-		requireNonEmpty([]struct{ key, val string }{
-			{"token", c.WorkspaceOne.Token},
-			{"syslog_host", c.WorkspaceOne.SyslogHost},
-		})
+		errs = appendIfEmpty(errs, nonEmpty,
+			field{"token", c.WorkspaceOne.Token},
+			field{"syslog_host", c.WorkspaceOne.SyslogHost})
 		if c.WorkspaceOne.SyslogPort < 1 || c.WorkspaceOne.SyslogPort > 65534 {
 			errs = append(errs, malformedf("expected syslog_port to be in range 1-65534"))
 		}
 	}
 	if slices.Contains(c.Backends, "CLOUDTRAIL_LAKE") {
-		requireNonEmpty([]struct{ key, val string }{
-			{"CLOUDTRAIL_LAKE channel_arn", c.CloudTrailLake.ChannelARN},
-			{"CLOUDTRAIL_LAKE region", c.CloudTrailLake.Region},
-		})
+		errs = appendIfEmpty(errs, nonEmpty,
+			field{"CLOUDTRAIL_LAKE channel_arn", c.CloudTrailLake.ChannelARN},
+			field{"CLOUDTRAIL_LAKE region", c.CloudTrailLake.Region})
 	}
 	if slices.Contains(c.Backends, "AZURE") {
 		errs = append(errs, c.validateAzure()...)
@@ -166,33 +171,27 @@ func (c *Config) validateAzure() []error {
 	var errs []error
 	switch c.Azure.AuthMethod {
 	case "legacy":
-		if c.Azure.WorkspaceID == "" {
-			errs = append(errs, malformedf("expected workspace_id to be non-empty"))
-		}
-		if c.Azure.PrimaryKey == "" {
-			errs = append(errs, malformedf("expected primary_key to be non-empty"))
-		}
+		errs = appendIfEmpty(errs,
+			func(name string) error { return malformedf("expected %s to be non-empty", name) },
+			field{"workspace_id", c.Azure.WorkspaceID},
+			field{"primary_key", c.Azure.PrimaryKey})
 	case "client_secret":
-		for _, f := range []struct{ name, val string }{
-			{"tenant_id", c.Azure.TenantID},
-			{"client_id", c.Azure.ClientID},
-			{"client_secret", c.Azure.ClientSecret},
-			{"dcr_endpoint", c.Azure.DCREndpoint},
-			{"dcr_immutable_id", c.Azure.DCRImmutableID},
-		} {
-			if f.val == "" {
-				errs = append(errs, malformedf("%s must be non-empty when auth_method is client_secret", f.name))
-			}
-		}
+		errs = appendIfEmpty(errs,
+			func(name string) error {
+				return malformedf("%s must be non-empty when auth_method is client_secret", name)
+			},
+			field{"tenant_id", c.Azure.TenantID},
+			field{"client_id", c.Azure.ClientID},
+			field{"client_secret", c.Azure.ClientSecret},
+			field{"dcr_endpoint", c.Azure.DCREndpoint},
+			field{"dcr_immutable_id", c.Azure.DCRImmutableID})
 	case "workload_identity":
-		for _, f := range []struct{ name, val string }{
-			{"dcr_endpoint", c.Azure.DCREndpoint},
-			{"dcr_immutable_id", c.Azure.DCRImmutableID},
-		} {
-			if f.val == "" {
-				errs = append(errs, malformedf("azure.%s must be non-empty when auth_method is workload_identity", f.name))
-			}
-		}
+		errs = appendIfEmpty(errs,
+			func(name string) error {
+				return malformedf("azure.%s must be non-empty when auth_method is workload_identity", name)
+			},
+			field{"dcr_endpoint", c.Azure.DCREndpoint},
+			field{"dcr_immutable_id", c.Azure.DCRImmutableID})
 	default:
 		errs = append(errs, malformedf("auth_method must be one of legacy, client_secret, workload_identity, got %q", c.Azure.AuthMethod))
 	}

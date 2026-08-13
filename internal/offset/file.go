@@ -94,10 +94,9 @@ func (f *File) Commit(_ context.Context, feedID string, offset uint64) error {
 		return fmt.Errorf("offset: commit on closed store")
 	}
 
-	if cur, ok := f.offsets[feedID]; ok && cur >= offset {
+	if !applyOffset(f.offsets, feedID, offset) {
 		return nil
 	}
-	f.offsets[feedID] = offset
 	f.dirty = true
 
 	if time.Since(f.lastFlush) < flushInterval {

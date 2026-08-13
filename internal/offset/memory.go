@@ -30,6 +30,18 @@ type Store interface {
 	Close(ctx context.Context) error
 }
 
+// applyOffset stores offset for feedID in offsets iff it advances the resume
+// floor, reporting whether the map changed. The watermark is monotonic: a commit
+// at or below the current value is rejected so a stale or out-of-order commit
+// never regresses it. Callers must hold the store's lock.
+func applyOffset(offsets map[string]uint64, feedID string, offset uint64) bool {
+	if cur, ok := offsets[feedID]; ok && cur >= offset {
+		return false
+	}
+	offsets[feedID] = offset
+	return true
+}
+
 // Memory is an in-memory Store backed by a map guarded by a RWMutex. It is the
 // direct analog of the Python FalconEvents offset dict
 // (fig/queue/__init__.py), minus the at-most-once dequeue-time advancement.
@@ -57,10 +69,7 @@ func (m *Memory) Load(_ context.Context, feedID string) (uint64, error) {
 func (m *Memory) Commit(_ context.Context, feedID string, offset uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if cur, ok := m.offsets[feedID]; ok && cur >= offset {
-		return nil
-	}
-	m.offsets[feedID] = offset
+	applyOffset(m.offsets, feedID, offset)
 	return nil
 }
 

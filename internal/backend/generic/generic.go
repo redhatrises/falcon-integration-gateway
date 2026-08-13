@@ -11,6 +11,7 @@ import (
 	"github.com/crowdstrike/falcon-integration-gateway/internal/backend"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 )
 
 // Runtime is the GENERIC backend. It accepts every event and logs it.
@@ -45,12 +46,7 @@ func parseEventTypes(raw string, logger *slog.Logger) []string {
 		return backend.AllEventTypes
 	}
 
-	var types []string
-	for _, t := range strings.Split(raw, ",") {
-		if trimmed := strings.TrimSpace(t); trimmed != "" {
-			types = append(types, trimmed)
-		}
-	}
+	types := utils.SplitCSV(raw)
 
 	if len(types) == 0 {
 		logger.Warn("GENERIC backend has empty event_types configuration, defaulting to ALL")

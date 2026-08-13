@@ -14,12 +14,13 @@ package config
 import (
 	"errors"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/go-viper/encoding/ini"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
+
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 )
 
 // Config is the fully-resolved, typed FIG configuration. Fields are populated
@@ -222,8 +223,8 @@ func Load(configPath string, flags *pflag.FlagSet) (*Config, error) {
 	}
 
 	// Derived fields: comma-split, trimmed. Empty string -> empty slice.
-	cfg.Backends = splitCSV(cfg.Gateway.Backends)
-	cfg.DetectionsExcludeClouds = splitCSV(cfg.Events.DetectionsExcludeClouds)
+	cfg.Backends = utils.SplitCSV(cfg.Gateway.Backends)
+	cfg.DetectionsExcludeClouds = utils.SplitCSV(cfg.Events.DetectionsExcludeClouds)
 
 	// Derived duration: parse the raw cache_ttl string. A parse failure leaves
 	// the duration zero; Validate is authoritative and reports the bad value.
@@ -467,19 +468,4 @@ func newViper() (*viper.Viper, error) {
 		return nil, err
 	}
 	return v, nil
-}
-
-// splitCSV splits a comma-separated string into trimmed, non-empty tokens.
-func splitCSV(s string) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
 }

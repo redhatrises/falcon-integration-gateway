@@ -151,7 +151,7 @@ func (s Stream) RefreshInterval() int64 { return s.refreshInterval }
 func (s Stream) Partition() (int64, error) {
 	m := streamPartitionRe.FindStringSubmatch(s.refreshURL)
 	if len(m) < 2 || m[1] == "" {
-		return 0, fmt.Errorf("lient: cannot parse stream partition from %q", s.refreshURL)
+		return 0, fmt.Errorf("client: cannot parse stream partition from %q", s.refreshURL)
 	}
 	p, err := strconv.ParseInt(m[1], 10, 64)
 	if err != nil {
@@ -274,6 +274,19 @@ func apiError(op string, errs []*models.MsaAPIError) error {
 	return fmt.Errorf("falcon client: %s: error from Falcon platform: %s", op, strings.Join(msgs, "; "))
 }
 
+// firstResource applies the single-resource response contract shared by the RTR
+// endpoints: surface any payload errors array via apiError, then require exactly
+// one non-nil resource. It returns the first resource or an error describing op.
+func firstResource[T any](op string, errs []*models.MsaAPIError, resources []*T) (*T, error) {
+	if err := apiError(op, errs); err != nil {
+		return nil, err
+	}
+	if len(resources) == 0 || resources[0] == nil {
+		return nil, fmt.Errorf("falcon/client: %s: no resources returned", op)
+	}
+	return resources[0], nil
+}
+
 // DeviceDetails fetches host details for a device ID via Hosts.GetDeviceDetailsV2
 // and returns the resource list (empty when the platform knows no such device).
 // Port of FalconAPI.device_details (fig/falcon/api.py:47-48), including the
@@ -338,14 +351,10 @@ func (c *Client) InitRTRSession(ctx context.Context, deviceID string) (*RTRSessi
 	if payload == nil {
 		return nil, fmt.Errorf("falcon/client: init rtr session: empty response")
 	}
-	if err := apiError("init rtr session", payload.Errors); err != nil {
+	r, err := firstResource("init rtr session", payload.Errors, payload.Resources)
+	if err != nil {
 		return nil, err
 	}
-	if len(payload.Resources) == 0 || payload.Resources[0] == nil {
-		return nil, fmt.Errorf("falcon/client: init rtr session: no session returned for device %q", deviceID)
-	}
-
-	r := payload.Resources[0]
 	s := &RTRSession{Platform: r.Platform, DeviceID: r.DeviceID}
 	if r.SessionID != nil {
 		s.SessionID = *r.SessionID
@@ -404,14 +413,10 @@ func (c *Client) ExecuteRTRCommand(ctx context.Context, cmd RTRCommand) (*RTRCom
 	if payload == nil {
 		return nil, fmt.Errorf("falcon/client: execute rtr command: empty response")
 	}
-	if err := apiError("execute rtr command", payload.Errors); err != nil {
+	r, err := firstResource("execute rtr command", payload.Errors, payload.Resources)
+	if err != nil {
 		return nil, err
 	}
-	if len(payload.Resources) == 0 || payload.Resources[0] == nil {
-		return nil, fmt.Errorf("falcon/client: execute rtr command: no command result returned")
-	}
-
-	r := payload.Resources[0]
 	res := &RTRCommandResult{}
 	if r.CloudRequestID != nil {
 		res.CloudRequestID = *r.CloudRequestID
@@ -449,14 +454,10 @@ func (c *Client) CheckRTRCommandStatus(ctx context.Context, cloudRequestID strin
 	if payload == nil {
 		return nil, fmt.Errorf("falcon/client: check rtr command status: empty response")
 	}
-	if err := apiError("check rtr command status", payload.Errors); err != nil {
+	r, err := firstResource("check rtr command status", payload.Errors, payload.Resources)
+	if err != nil {
 		return nil, err
 	}
-	if len(payload.Resources) == 0 || payload.Resources[0] == nil {
-		return nil, fmt.Errorf("falcon/client: check rtr command status: no status returned for request %q", cloudRequestID)
-	}
-
-	r := payload.Resources[0]
 	st := &RTRCommandStatus{SequenceID: r.SequenceID}
 	if r.Complete != nil {
 		st.Complete = *r.Complete

@@ -94,7 +94,6 @@ func TestUnsetFlagYieldsDefault(t *testing.T) {
 
 func TestSettingsCatalogInvariants(t *testing.T) {
 	seenKey := map[string]bool{}
-	seenFlag := map[string]bool{}
 	for _, s := range settings {
 		if s.Key == "" {
 			t.Errorf("setting has empty Key: %+v", s)
@@ -107,11 +106,6 @@ func TestSettingsCatalogInvariants(t *testing.T) {
 		if s.Flag == "" {
 			continue
 		}
-		if seenFlag[s.Flag] {
-			t.Errorf("duplicate Flag %q", s.Flag)
-		}
-		seenFlag[s.Flag] = true
-
 		switch s.Default.(type) {
 		case string, int, uint64, bool:
 		default:

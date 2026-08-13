@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -16,6 +15,7 @@ import (
 	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/offset"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 )
 
 // eppDetectionEventType is the event type gated by the cloud-detection filter
@@ -400,7 +400,7 @@ func (p *Pipeline) dispatch(ctx context.Context, logger *slog.Logger, ev *events
 // failure counter and, under DLQ, dead-letters the event (advancing the
 // watermark); under block, holds the watermark.
 func (p *Pipeline) handleEnrichmentFailure(ctx context.Context, logger *slog.Logger, ev *events.Event, err error) {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if utils.IsCanceled(err) {
 		logger.Warn("enrichment aborted by context; holding watermark",
 			"error", err,
 			"feed_id", ev.FeedID,
@@ -446,7 +446,7 @@ func (p *Pipeline) deliver(ctx context.Context, logger *slog.Logger, b backend.B
 			delay := p.retryDelay(attempt, ev.Offset())
 			logger.Warn("backend delivery failed; retrying",
 				"attempt", attempt, "retry_in", delay, "error", err)
-			if !sleepCtx(ctx, delay) {
+			if !utils.Sleep(ctx, delay) {
 				return fmt.Errorf("delivery aborted: %w", ctx.Err())
 			}
 		}
@@ -464,22 +464,6 @@ func (p *Pipeline) retryDelay(attempt int, offset uint64) time.Duration {
 	}
 	skew := time.Duration(offset%retrySkewMod) * retrySkewUnit
 	return time.Duration(attempt)*p.retryBase + skew
-}
-
-// sleepCtx waits for d or until ctx is cancelled. It returns true if the full
-// duration elapsed (or d is non-positive) and false if ctx was cancelled first.
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		return ctx.Err() == nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
 }
 
 // markDone advances the in-order commit watermark for the event's feed. A

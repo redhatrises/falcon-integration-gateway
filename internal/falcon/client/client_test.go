@@ -486,3 +486,44 @@ func TestDeleteRTRSessionPayloadErrorsBecomeError(t *testing.T) {
 		t.Fatal("DeleteRTRSession() expected error for non-empty payload errors, got nil")
 	}
 }
+
+func TestFirstResource(t *testing.T) {
+	t.Parallel()
+
+	r1, r2 := 1, 2
+	apiErr := []*models.MsaAPIError{{Code: int32ptr(400), Message: strptr("bad")}}
+
+	tests := []struct {
+		name      string
+		errs      []*models.MsaAPIError
+		resources []*int
+		wantErr   bool
+		wantVal   int
+	}{
+		{name: "clean single resource", resources: []*int{&r1}, wantVal: 1},
+		{name: "ignores later resources", resources: []*int{&r1, &r2}, wantVal: 1},
+		{name: "payload errors surface", errs: apiErr, resources: []*int{&r1}, wantErr: true},
+		{name: "empty resources", resources: []*int{}, wantErr: true},
+		{name: "nil resource slice", resources: nil, wantErr: true},
+		{name: "first resource nil", resources: []*int{nil}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := firstResource("op", tt.errs, tt.resources)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("firstResource() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("firstResource() unexpected error: %v", err)
+			}
+			if got == nil || *got != tt.wantVal {
+				t.Fatalf("firstResource() = %v, want %d", got, tt.wantVal)
+			}
+		})
+	}
+}
