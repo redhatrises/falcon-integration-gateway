@@ -13,7 +13,8 @@
     "start_from_newest": false,
     "offset_store": "file",
     "offset_store_path": "offsets.json",
-    "delivery_failure": "dlq"
+    "offset_store_region": "",
+    "delivery_failure": "drop"
   },
   "logging": {
     "level": "INFO"

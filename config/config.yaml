@@ -50,11 +50,14 @@ events:
   # Offset store backend.
   #offset_store: file
 
-  # Path to the file offset store.
+  # Path to the file offset store, or the SSM parameter name when offset_store is ssm.
   #offset_store_path: offsets.json
 
-  # Delivery-failure handling mode.
-  #delivery_failure: dlq
+  # AWS region for the ssm offset store.
+  #offset_store_region: ""
+
+  # Delivery-failure handling mode (drop, discard, block; dlq is a deprecated alias for drop).
+  #delivery_failure: drop
 
 logging:
   # Log level (DEBUG, INFO, WARN, ERROR).
