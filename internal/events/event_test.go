@@ -1,6 +1,7 @@
 package events
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -164,5 +165,187 @@ func TestParseLineRoundTrip(t *testing.T) {
 func TestParseLineInvalidJSON(t *testing.T) {
 	if _, err := ParseLine([]byte("{not json"), "f1"); err == nil {
 		t.Fatalf("expected error for invalid JSON")
+	}
+}
+
+func TestDetectionAccessorsPreferDetectionKeys(t *testing.T) {
+	t.Parallel()
+	ev := &Event{
+		Metadata: Metadata{CustomerIDString: "cid-123", Version: "1.0"},
+		Event: map[string]any{
+			"DetectId":          "ldt:abc:1",
+			"FalconHostLink":    "https://falcon.example/detect/1",
+			"SeverityName":      "High",
+			"Severity":          float64(70),
+			"DetectDescription": "a detection",
+			"DetectName":        "SuspiciousActivity",
+			"ServiceName":       "Prevention Policy",
+		},
+	}
+
+	if got := ev.EventID(); got != "ldt:abc:1" {
+		t.Errorf("EventID = %q, want ldt:abc:1", got)
+	}
+	if got := ev.FalconLink(); got != "https://falcon.example/detect/1" {
+		t.Errorf("FalconLink = %q", got)
+	}
+	if got := ev.CID(); got != "cid-123" {
+		t.Errorf("CID = %q, want cid-123", got)
+	}
+	if got := ev.SeverityName(); got != "High" {
+		t.Errorf("SeverityName = %q, want High", got)
+	}
+	if got := ev.Severity(); got != 70 {
+		t.Errorf("Severity = %d, want 70", got)
+	}
+	if got := ev.DetectDescription(); got != "a detection" {
+		t.Errorf("DetectDescription = %q", got)
+	}
+	if got := ev.DetectName(); got != "SuspiciousActivity" {
+		t.Errorf("DetectName = %q", got)
+	}
+	if got := ev.ServiceName(); got != "Prevention Policy" {
+		t.Errorf("ServiceName = %q", got)
+	}
+}
+
+func TestDetectionAccessorsFallBackToAuditKeys(t *testing.T) {
+	t.Parallel()
+	ev := &Event{
+		Event: map[string]any{
+			"CompositeId": "aud:xyz:2",
+			"Description": "an audit event",
+			"Name":        "UserActivityAuditEvent",
+		},
+	}
+
+	if got := ev.EventID(); got != "aud:xyz:2" {
+		t.Errorf("EventID = %q, want aud:xyz:2", got)
+	}
+	if got := ev.DetectDescription(); got != "an audit event" {
+		t.Errorf("DetectDescription = %q", got)
+	}
+	if got := ev.DetectName(); got != "UserActivityAuditEvent" {
+		t.Errorf("DetectName = %q", got)
+	}
+}
+
+// TestDedupKey pins the dedup-key contract every sink relies on: the key is the
+// UID (<feedID>_<offset>), so distinct offsets yield distinct keys, the same
+// offset always yields the same key across a redelivery, and a present
+// detection/audit id does not change it.
+func TestDedupKey(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		ev   *Event
+		want string
+	}{
+		{
+			name: "detection event uses UID, not DetectId",
+			ev: &Event{
+				Metadata: Metadata{Offset: 42},
+				FeedID:   "feed1",
+				Event:    map[string]any{"DetectId": "ldt:abc:1"},
+			},
+			want: "feed1_42",
+		},
+		{
+			name: "audit event uses UID, not CompositeId",
+			ev: &Event{
+				Metadata: Metadata{Offset: 7},
+				FeedID:   "feed1",
+				Event:    map[string]any{"CompositeId": "aud:xyz:2"},
+			},
+			want: "feed1_7",
+		},
+		{
+			name: "distinct offset yields distinct key",
+			ev: &Event{
+				Metadata: Metadata{Offset: 43},
+				FeedID:   "feed1",
+				Event:    map[string]any{"DetectId": "ldt:abc:1"},
+			},
+			want: "feed1_43",
+		},
+		{
+			name: "no event body still yields a non-empty key",
+			ev:   &Event{Metadata: Metadata{Offset: 5}, FeedID: "feed2"},
+			want: "feed2_5",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.ev.DedupKey(); got != tt.want {
+				t.Errorf("DedupKey() = %q, want %q", got, tt.want)
+			}
+			if got := tt.ev.DedupKey(); got != tt.ev.UID() {
+				t.Errorf("DedupKey() = %q, want it to equal UID() = %q", got, tt.ev.UID())
+			}
+		})
+	}
+}
+
+func TestParseLinePreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
+	// 2^53 + 1 is the smallest integer float64 cannot represent exactly.
+	const big = "9007199254740993"
+	line := []byte(`{"metadata":{"eventType":"EppDetectionSummaryEvent","offset":1},"event":{"ProcessId":` + big + `}}`)
+	ev, err := ParseLine(line, "feed1")
+	if err != nil {
+		t.Fatalf("ParseLine: %v", err)
+	}
+	got, ok := ev.Event["ProcessId"].(json.Number)
+	if !ok {
+		t.Fatalf("ProcessId decoded as %T, want json.Number (UseNumber)", ev.Event["ProcessId"])
+	}
+	if got.String() != big {
+		t.Errorf("ProcessId = %s, want %s (no float64 rounding)", got.String(), big)
+	}
+}
+
+func TestSeverityMissingDefaultsToFive(t *testing.T) {
+	t.Parallel()
+	ev := &Event{Event: map[string]any{}}
+	if got := ev.Severity(); got != 5 {
+		t.Errorf("Severity = %d, want 5 when absent (fig/falcon/models.py:66-68)", got)
+	}
+	if got := ev.SeverityName(); got != "" {
+		t.Errorf("SeverityName = %q, want empty when absent", got)
+	}
+}
+
+func TestProcessAccessors(t *testing.T) {
+	t.Parallel()
+	ev := &Event{
+		Event: map[string]any{
+			"FileName":    "malware.exe",
+			"FilePath":    `\Device\HarddiskVolume2\Users\admin`,
+			"CommandLine": "malware.exe --do-evil",
+		},
+	}
+	if got := ev.FileName(); got != "malware.exe" {
+		t.Errorf("FileName = %q, want malware.exe", got)
+	}
+	if got := ev.FilePath(); got != `\Device\HarddiskVolume2\Users\admin` {
+		t.Errorf("FilePath = %q", got)
+	}
+	if got := ev.CommandLine(); got != "malware.exe --do-evil" {
+		t.Errorf("CommandLine = %q, want malware.exe --do-evil", got)
+	}
+}
+
+func TestProcessAccessorsAbsentAreEmpty(t *testing.T) {
+	t.Parallel()
+	ev := &Event{Event: map[string]any{}}
+	if got := ev.FileName(); got != "" {
+		t.Errorf("FileName = %q, want empty when absent", got)
+	}
+	if got := ev.FilePath(); got != "" {
+		t.Errorf("FilePath = %q, want empty when absent", got)
+	}
+	if got := ev.CommandLine(); got != "" {
+		t.Errorf("CommandLine = %q, want empty when absent", got)
 	}
 }

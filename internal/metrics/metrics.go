@@ -1,9 +1,9 @@
 // Package metrics defines the Prometheus collectors for the FIG pipeline and
 // exposes a package-private registry.
 //
-// The /metrics HTTP server is wired later by the Assemble agent; this package
-// only defines and registers the collectors on a dedicated registry (no use of
-// the global default registry, to keep tests and embedding clean).
+// Collectors are registered on a dedicated registry (not the global default
+// registry) to keep tests and embedding clean; the /metrics HTTP handler serves
+// from it via Registry().
 package metrics
 
 import "github.com/prometheus/client_golang/prometheus"
@@ -41,11 +41,23 @@ var (
 		Help: "Total backend delivery failures after retry.",
 	})
 
-	// EventsDeadLettered counts events dead-lettered by the delivery policy.
-	EventsDeadLettered = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "fig_events_dead_lettered_total",
-		Help: "Total events dead-lettered by the delivery failure policy.",
+	// EventsDroppedAfterRetry counts events discarded by the drop delivery policy
+	// after retries were exhausted (or a panic was recovered). The event is
+	// acknowledged and the watermark advances; the payload is not delivered
+	// anywhere — there is no dead-letter sink.
+	EventsDroppedAfterRetry = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "fig_events_dropped_after_retry_total",
+		Help: "Total events discarded by the drop delivery-failure policy after retries were exhausted.",
 	})
+
+	// EventsDropped counts events a backend deliberately dropped, labeled by the
+	// backend and the drop reason. A drop is handled (the watermark advances) but
+	// not delivered, so it is counted here rather than under EventsDelivered or
+	// EventsFailed.
+	EventsDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "fig_events_dropped_total",
+		Help: "Total events deliberately dropped by a backend, labeled by backend and reason.",
+	}, []string{"backend", "reason"})
 
 	// QueueDepth is the current depth of the bounded event channel.
 	QueueDepth = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -57,6 +69,22 @@ var (
 	OffsetCommitted = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "fig_offset_committed",
 		Help: "Last committed offset watermark, labeled by feed_id.",
+	}, []string{"feed_id"})
+
+	// PendingEvents is the number of completed-but-not-yet-committed offsets held
+	// per feed. It climbs when the resume watermark stalls (an offset gap, or a
+	// blocked event under the block policy) and is a leading indicator of the
+	// unbounded-growth failure modes those conditions cause.
+	PendingEvents = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "fig_pending_events",
+		Help: "Completed-but-not-yet-committed offsets held per feed_id.",
+	}, []string{"feed_id"})
+
+	// PendingOverflow counts events that exceeded events.pending_max while the
+	// watermark was stalled under the block policy, labeled by feed_id.
+	PendingOverflow = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "fig_pending_overflow_total",
+		Help: "Events that exceeded the per-feed pending cap under the block policy.",
 	}, []string{"feed_id"})
 
 	// StreamReconnects counts stream reconnection attempts.
@@ -106,9 +134,12 @@ func init() {
 		EventsDispatched,
 		EventsDelivered,
 		EventsFailed,
-		EventsDeadLettered,
+		EventsDroppedAfterRetry,
+		EventsDropped,
 		QueueDepth,
 		OffsetCommitted,
+		PendingEvents,
+		PendingOverflow,
 		StreamReconnects,
 		EnrichHostsFetched,
 		EnrichCacheHits,
@@ -119,7 +150,7 @@ func init() {
 }
 
 // Registry returns the Prometheus registry all FIG collectors are registered
-// on. The metrics HTTP handler (wired later) should serve from this registry.
+// on. The metrics HTTP handler serves from this registry.
 func Registry() *prometheus.Registry {
 	return registry
 }

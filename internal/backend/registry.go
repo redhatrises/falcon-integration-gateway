@@ -65,8 +65,7 @@ func Names() []string {
 // UnionEventTypes computes the server-side eventType filter for a set of
 // backends. It returns nil if ANY backend uses AllEventTypes (contains "*"),
 // meaning no server-side filter is applied; otherwise it returns the sorted,
-// de-duplicated union of every backend's RelevantEventTypes. Port of
-// Backends.relevant_event_types (fig/backends/__init__.py:52-56).
+// de-duplicated union of every backend's RelevantEventTypes.
 func UnionEventTypes(bs []Backend) []string {
 	seen := map[string]struct{}{}
 	for _, b := range bs {

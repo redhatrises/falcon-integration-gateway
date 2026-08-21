@@ -5,12 +5,14 @@
 //
 // A Store persists the highest committed offset per Falcon feed_id so that a
 // process restart resumes the stream where delivery last succeeded, giving
-// at-least-once semantics. Two implementations are provided:
+// at-least-once semantics. Three implementations are provided:
 //
 //   - Memory: an in-memory map (tests and ephemeral runs); the direct analog
 //     of the Python dict but without dequeue-time advancement.
 //   - File: an atomically-written JSON object persisted to disk, surviving
 //     process restarts.
+//   - SSM: the same JSON object persisted to an AWS Systems Manager parameter,
+//     surviving restarts without a shared filesystem (stateless containers).
 package offset
 
 import (

@@ -207,11 +207,16 @@
 # Env: SYSLOG_PORT
 #syslog_port = 6514
 
-[enrich]
+# Verify the syslog server's TLS certificate. Default false for parity with the
+# reference deployment; set true when the receiver presents a valid certificate.
+# Env: WORKSPACEONE_TLS_VERIFY
+#tls_verify = false
+
+[cache]
 # Enrichment cache size (1-1000000).
-# Env: ENRICH_CACHE_SIZE
-#cache_size = 8192
+# Env: CACHE_SIZE
+#size = 8192
 
 # Enrichment cache TTL (Go duration, non-negative).
-# Env: ENRICH_CACHE_TTL
-#cache_ttl = "1h"
+# Env: CACHE_TTL
+#ttl = "1h"

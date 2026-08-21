@@ -1,10 +1,14 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	apiclient "github.com/crowdstrike/gofalcon/falcon/client"
 	"github.com/crowdstrike/gofalcon/falcon/client/hosts"
@@ -15,6 +19,7 @@ import (
 	"github.com/go-openapi/strfmt"
 
 	"github.com/crowdstrike/falcon-integration-gateway/internal/testutil"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/version"
 )
 
 // fakeTransport is a runtime.ClientTransport that returns a canned typed
@@ -132,6 +137,37 @@ func TestNoStreamsError(t *testing.T) {
 	}
 }
 
+// TestUserAgent pins the User-Agent format: the base token
+// "falcon-integration-gateway/<version>" followed by " <NAME>-Backend" for each
+// backend, blanks skipped, whole string trimmed.
+func TestUserAgent(t *testing.T) {
+	t.Parallel()
+
+	base := "falcon-integration-gateway/" + version.Version
+	tests := []struct {
+		name     string
+		backends []string
+		want     string
+	}{
+		{"no backends is the bare base token", nil, base},
+		{"single backend appends one suffix", []string{"GENERIC"}, base + " GENERIC-Backend"},
+		{
+			"multiple backends append in given order",
+			[]string{"AWS_SQS", "AZURE"},
+			base + " AWS_SQS-Backend AZURE-Backend",
+		},
+		{"blank backend names are skipped", []string{"", "  ", "GENERIC"}, base + " GENERIC-Backend"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := userAgent(tc.backends); got != tc.want {
+				t.Errorf("userAgent(%v) = %q, want %q", tc.backends, got, tc.want)
+			}
+		})
+	}
+}
+
 func strptr(s string) *string { return &s }
 
 func TestDeviceDetailsMapsResources(t *testing.T) {
@@ -148,6 +184,16 @@ func TestDeviceDetailsMapsResources(t *testing.T) {
 						InstanceID:               "i-abc123",
 						ServiceProvider:          "AWS_EC2_V2",
 						ServiceProviderAccountID: "1234567890",
+						MacAddress:               "aa-bb-cc-dd-ee-ff",
+						ExternalIP:               "203.0.113.7",
+						LocalIP:                  "10.0.0.5",
+						MachineDomain:            "corp.example.com",
+						AgentVersion:             "7.10.0",
+						LastSeen:                 "2026-08-13T00:00:00Z",
+						OsVersion:                "Windows Server 2022",
+						SiteName:                 "us-east",
+						Ou:                       []string{"Servers", "Prod"},
+						Tags:                     []string{"SensorGroupingTags/web", "role/api"},
 					},
 				},
 			},
@@ -169,17 +215,47 @@ func TestDeviceDetailsMapsResources(t *testing.T) {
 	if d.DeviceID != "dev-1" {
 		t.Errorf("DeviceID = %q, want %q", d.DeviceID, "dev-1")
 	}
-	if d.PlatformName != "Windows" {
-		t.Errorf("PlatformName = %q, want %q", d.PlatformName, "Windows")
+	if d.Platform != "Windows" {
+		t.Errorf("Platform = %q, want %q", d.Platform, "Windows")
 	}
 	if d.InstanceID != "i-abc123" {
 		t.Errorf("InstanceID = %q, want %q", d.InstanceID, "i-abc123")
 	}
-	if d.ServiceProvider != "AWS_EC2_V2" {
-		t.Errorf("ServiceProvider = %q, want %q", d.ServiceProvider, "AWS_EC2_V2")
+	if d.CloudProvider != "AWS_EC2_V2" {
+		t.Errorf("CloudProvider = %q, want %q", d.CloudProvider, "AWS_EC2_V2")
 	}
-	if d.ServiceProviderAccountID != "1234567890" {
-		t.Errorf("ServiceProviderAccountID = %q, want %q", d.ServiceProviderAccountID, "1234567890")
+	if d.CloudProviderAccountID != "1234567890" {
+		t.Errorf("CloudProviderAccountID = %q, want %q", d.CloudProviderAccountID, "1234567890")
+	}
+	if d.MACAddress != "aa-bb-cc-dd-ee-ff" {
+		t.Errorf("MACAddress = %q, want %q", d.MACAddress, "aa-bb-cc-dd-ee-ff")
+	}
+	if d.ExternalIP != "203.0.113.7" {
+		t.Errorf("ExternalIP = %q, want %q", d.ExternalIP, "203.0.113.7")
+	}
+	if d.LocalIP != "10.0.0.5" {
+		t.Errorf("LocalIP = %q, want %q", d.LocalIP, "10.0.0.5")
+	}
+	if d.MachineDomain != "corp.example.com" {
+		t.Errorf("MachineDomain = %q, want %q", d.MachineDomain, "corp.example.com")
+	}
+	if d.AgentVersion != "7.10.0" {
+		t.Errorf("AgentVersion = %q, want %q", d.AgentVersion, "7.10.0")
+	}
+	if d.LastSeen != "2026-08-13T00:00:00Z" {
+		t.Errorf("LastSeen = %q, want %q", d.LastSeen, "2026-08-13T00:00:00Z")
+	}
+	if d.OSVersion != "Windows Server 2022" {
+		t.Errorf("OSVersion = %q, want %q", d.OSVersion, "Windows Server 2022")
+	}
+	if d.SiteName != "us-east" {
+		t.Errorf("SiteName = %q, want %q", d.SiteName, "us-east")
+	}
+	if len(d.OU) != 2 || d.OU[0] != "Servers" || d.OU[1] != "Prod" {
+		t.Errorf("OU = %v, want [Servers Prod]", d.OU)
+	}
+	if len(d.Tags) != 2 || d.Tags[0] != "SensorGroupingTags/web" || d.Tags[1] != "role/api" {
+		t.Errorf("Tags = %v, want [SensorGroupingTags/web role/api]", d.Tags)
 	}
 }
 
@@ -484,6 +560,213 @@ func TestDeleteRTRSessionPayloadErrorsBecomeError(t *testing.T) {
 
 	if err := c.DeleteRTRSession(context.Background(), "sess-1"); err == nil {
 		t.Fatal("DeleteRTRSession() expected error for non-empty payload errors, got nil")
+	}
+}
+
+// fakeClientResponse is a minimal runtime.ClientResponse over an in-memory body.
+// fakeTransport.Submit short-circuits before op.Reader runs, so the
+// extracted-file-contents responder invokes the Reader itself against this to
+// exercise the raw-byte passthrough that keeps a binary 7z blob intact.
+type fakeClientResponse struct {
+	code int
+	body []byte
+}
+
+func (r *fakeClientResponse) Code() int                  { return r.code }
+func (r *fakeClientResponse) Message() string            { return http.StatusText(r.code) }
+func (r *fakeClientResponse) GetHeader(string) string    { return "" }
+func (r *fakeClientResponse) GetHeaders(string) []string { return nil }
+func (r *fakeClientResponse) Body() io.ReadCloser        { return io.NopCloser(bytes.NewReader(r.body)) }
+
+// rtrFetchStubs drives the multi-call RTRFetchFile flow: init → active-responder
+// get → status poll → list files → get extracted contents → delete. Each field
+// shapes one stage's canned response.
+type rtrFetchStubs struct {
+	cloudRequestID string
+	complete       bool
+	stderr         string
+	files          []*models.ModelFile
+	fileBytes      []byte
+}
+
+func (s rtrFetchStubs) responder(t *testing.T) func(op *runtime.ClientOperation) (any, error) {
+	t.Helper()
+	return func(op *runtime.ClientOperation) (any, error) {
+		switch op.ID {
+		case "RTR-InitSession":
+			return &real_time_response.RTRInitSessionCreated{
+				Payload: &models.DomainInitResponseWrapper{
+					Resources: []*models.DomainInitResponse{
+						{SessionID: strptr("sess-1"), Platform: "Linux", DeviceID: "dev-1"},
+					},
+				},
+			}, nil
+		case "RTR-ExecuteActiveResponderCommand":
+			return &real_time_response.RTRExecuteActiveResponderCommandCreated{
+				Payload: &models.DomainCommandExecuteResponseWrapper{
+					Resources: []*models.DomainCommandExecuteResponse{
+						{CloudRequestID: strptr(s.cloudRequestID), SessionID: strptr("sess-1")},
+					},
+				},
+			}, nil
+		case "RTR-CheckCommandStatus":
+			complete := s.complete
+			stderr := s.stderr
+			return &real_time_response.RTRCheckCommandStatusOK{
+				Payload: &models.DomainStatusResponseWrapper{
+					Resources: []*models.DomainStatusResponse{
+						{Complete: &complete, Stdout: strptr(""), Stderr: &stderr},
+					},
+				},
+			}, nil
+		case "RTR-ListFiles":
+			return &real_time_response.RTRListFilesOK{
+				Payload: &models.DomainListFilesResponseWrapper{Resources: s.files},
+			}, nil
+		case "RTR-GetExtractedFileContents":
+			resp := &fakeClientResponse{code: http.StatusOK, body: s.fileBytes}
+			return op.Reader.ReadResponse(resp, nil)
+		case "RTR-DeleteSession":
+			return &real_time_response.RTRDeleteSessionNoContent{Payload: &models.MsaReplyMetaOnly{}}, nil
+		default:
+			t.Errorf("unexpected op %q", op.ID)
+			return nil, errors.New("unexpected op " + op.ID)
+		}
+	}
+}
+
+func opsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func containsOp(ids []string, want string) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRTRFetchFileSuccess(t *testing.T) {
+	t.Parallel()
+
+	// 7z magic bytes plus embedded nulls and a high byte: a JSON consumer would
+	// corrupt these, so an exact match proves the raw-byte Reader passthrough.
+	raw := []byte{0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00, 0x01, 0xff, 0x00, 0x7d}
+	stubs := rtrFetchStubs{
+		cloudRequestID: "crid-get",
+		complete:       true,
+		files: []*models.ModelFile{
+			{CloudRequestID: strptr("other-crid"), Sha256: strptr("sha-other")},
+			{CloudRequestID: strptr("crid-get"), Sha256: strptr("sha-match")},
+		},
+		fileBytes: raw,
+	}
+	ft := &fakeTransport{responder: stubs.responder(t)}
+	c := newTestClient(ft)
+
+	got, err := c.RTRFetchFile(context.Background(), "dev-1", "/opt/azure/agentconfig.json")
+	if err != nil {
+		t.Fatalf("RTRFetchFile() unexpected error: %v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Errorf("RTRFetchFile() bytes = %v, want %v", got, raw)
+	}
+	want := []string{
+		"RTR-InitSession",
+		"RTR-ExecuteActiveResponderCommand",
+		"RTR-CheckCommandStatus",
+		"RTR-ListFiles",
+		"RTR-GetExtractedFileContents",
+		"RTR-DeleteSession",
+	}
+	if ids := ft.opIDs(); !opsEqual(ids, want) {
+		t.Errorf("op IDs = %v, want %v", ids, want)
+	}
+}
+
+func TestRTRFetchFileNoMatchingFile(t *testing.T) {
+	t.Parallel()
+
+	stubs := rtrFetchStubs{
+		cloudRequestID: "crid-get",
+		complete:       true,
+		files: []*models.ModelFile{
+			{CloudRequestID: strptr("different-crid"), Sha256: strptr("sha-x")},
+		},
+	}
+	ft := &fakeTransport{responder: stubs.responder(t)}
+	c := newTestClient(ft)
+
+	if _, err := c.RTRFetchFile(context.Background(), "dev-1", "/p"); err == nil {
+		t.Fatal("RTRFetchFile() expected error when no file matches the get command, got nil")
+	}
+	ids := ft.opIDs()
+	if len(ids) == 0 || ids[len(ids)-1] != "RTR-DeleteSession" {
+		t.Fatalf("expected session closed (last op RTR-DeleteSession), got %v", ids)
+	}
+	if containsOp(ids, "RTR-GetExtractedFileContents") {
+		t.Errorf("did not expect RTR-GetExtractedFileContents when no file matched, got %v", ids)
+	}
+}
+
+func TestRTRFetchFileStderrIsError(t *testing.T) {
+	t.Parallel()
+
+	stubs := rtrFetchStubs{
+		cloudRequestID: "crid-get",
+		complete:       true,
+		stderr:         "get: permission denied",
+	}
+	ft := &fakeTransport{responder: stubs.responder(t)}
+	c := newTestClient(ft)
+
+	if _, err := c.RTRFetchFile(context.Background(), "dev-1", "/p"); err == nil {
+		t.Fatal("RTRFetchFile() expected error for non-empty stderr, got nil")
+	}
+	ids := ft.opIDs()
+	if len(ids) == 0 || ids[len(ids)-1] != "RTR-DeleteSession" {
+		t.Fatalf("expected session closed (last op RTR-DeleteSession), got %v", ids)
+	}
+	if containsOp(ids, "RTR-ListFiles") {
+		t.Errorf("did not expect RTR-ListFiles after a stderr failure, got %v", ids)
+	}
+}
+
+func TestRTRFetchFilePollTimeout(t *testing.T) {
+	t.Parallel()
+
+	// A command that never completes must be bounded by the caller's context
+	// deadline, not busy-loop forever.
+	stubs := rtrFetchStubs{cloudRequestID: "crid-get", complete: false}
+	ft := &fakeTransport{responder: stubs.responder(t)}
+	c := newTestClient(ft)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+
+	_, err := c.RTRFetchFile(ctx, "dev-1", "/p")
+	if err == nil {
+		t.Fatal("RTRFetchFile() expected timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("RTRFetchFile() error = %v, want context.DeadlineExceeded", err)
+	}
+	ids := ft.opIDs()
+	if len(ids) == 0 || ids[len(ids)-1] != "RTR-DeleteSession" {
+		t.Fatalf("expected session closed (last op RTR-DeleteSession), got %v", ids)
+	}
+	if containsOp(ids, "RTR-ListFiles") || containsOp(ids, "RTR-GetExtractedFileContents") {
+		t.Errorf("did not expect list/get ops after poll timeout, got %v", ids)
 	}
 }
 

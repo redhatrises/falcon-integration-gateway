@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -101,7 +102,11 @@ func newConnection(cfg connectionConfig) *connection {
 func (c *connection) buildURL() string {
 	filter := ""
 	if len(c.cfg.eventTypes) > 0 {
-		filter = "&eventType=" + strings.Join(c.cfg.eventTypes, ",")
+		escaped := make([]string, len(c.cfg.eventTypes))
+		for i, t := range c.cfg.eventTypes {
+			escaped[i] = url.QueryEscape(t)
+		}
+		filter = "&eventType=" + strings.Join(escaped, ",")
 	}
 	if c.cfg.useWhence {
 		return c.cfg.url + "&whence=2" + filter

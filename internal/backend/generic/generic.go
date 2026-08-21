@@ -1,6 +1,5 @@
 // Package generic implements the GENERIC reference backend, which simply logs
-// each received Falcon event to stdout. It is the P1 reference backend and a
-// port of fig/backends/generic/__init__.py.
+// each received Falcon event to stdout.
 package generic
 
 import (
@@ -21,9 +20,8 @@ type Runtime struct {
 }
 
 // New constructs the GENERIC backend. It matches backend.Constructor and is
-// registered in init(). Port of Runtime.__init__ in
-// fig/backends/generic/__init__.py: it resolves the configured event types and
-// logs them on startup.
+// registered in init(): it resolves the configured event types and logs them on
+// startup.
 func New(cfg *config.Config, logger *slog.Logger) (backend.Backend, error) {
 	r := &Runtime{
 		logger:     logger,
@@ -37,10 +35,10 @@ func New(cfg *config.Config, logger *slog.Logger) (backend.Backend, error) {
 	return r, nil
 }
 
-// parseEventTypes mirrors the RELEVANT_EVENT_TYPES property in the Python
-// source: "ALL" (case-insensitive, trimmed) yields the AllEventTypes sentinel;
-// otherwise the value is comma-split and trimmed; an empty parsed list logs a
-// warning and falls back to AllEventTypes.
+// parseEventTypes resolves the configured event types: "ALL" (case-insensitive,
+// trimmed) yields the AllEventTypes sentinel; otherwise the value is comma-split
+// and trimmed; an empty parsed list logs a warning and falls back to
+// AllEventTypes.
 func parseEventTypes(raw string, logger *slog.Logger) []string {
 	if strings.EqualFold(strings.TrimSpace(raw), "ALL") {
 		return backend.AllEventTypes

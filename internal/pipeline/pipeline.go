@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -20,7 +21,7 @@ import (
 
 // eppDetectionEventType is the event type gated by the cloud-detection filter
 // (second dispatch gate). Port of fig/backends/__init__.py:39.
-const eppDetectionEventType = "EppDetectionSummaryEvent"
+const eppDetectionEventType = events.EppDetectionSummaryEventType
 
 // maxDeliveryAttempts is the total number of Process attempts per backend
 // (initial try plus bounded retries) before applying the delivery-failure
@@ -44,18 +45,22 @@ const (
 )
 
 // deliveryPolicy selects what happens when a backend Process fails after the
-// bounded retry: dead-letter (ack and move on) or block (stall the watermark).
+// bounded retry: drop (ack and move on) or block (stall the watermark).
 type deliveryPolicy int
 
 const (
-	// policyDLQ dead-letters a failed event: it logs dead_letter=true, bumps
-	// fig_events_dead_lettered_total, and treats the event as handled so the
-	// resume watermark advances. Matches Python's move-on resilience while
-	// adding visibility. This is the default.
-	policyDLQ deliveryPolicy = iota
+	// policyDrop discards a failed event: it logs dropped=true, bumps
+	// fig_events_dropped_after_retry_total, and treats the event as handled so
+	// the resume watermark advances. There is no dead-letter sink — the payload
+	// is gone. This matches Python's move-on resilience while making the loss
+	// visible. This is the default.
+	policyDrop deliveryPolicy = iota
 	// policyBlock does NOT mark a failed event done, so its offset never enters
-	// the contiguous run and the resume watermark stalls indefinitely (strict /
-	// compliance deployments).
+	// the contiguous run and the resume watermark stalls indefinitely. It stops
+	// the world on repeated failure: pending offsets accumulate (bounded by
+	// events.pending_max) and delivery only resumes after the failing backend
+	// recovers and the process is restarted. For strict / compliance deployments
+	// that must never drop an event.
 	policyBlock
 )
 
@@ -99,65 +104,82 @@ type Pipeline struct {
 	winFiltered atomic.Uint64
 }
 
+// Params holds the constructor inputs for New: the resolved config, the built
+// backends, the enricher, an offset store, and a logger.
+type Params struct {
+	Config   *config.Config
+	Backends []backend.Backend
+	Enricher events.Enricher
+	Store    offset.Store
+	Logger   *slog.Logger
+}
+
 // New constructs a Pipeline from resolved config, the built backends, the
 // enricher, an offset store, and a logger. It validates the worker count
 // (defensively; config validation already constrains it to [1,127]) and
-// resolves the delivery-failure policy (default DLQ).
-func New(cfg *config.Config, backends []backend.Backend, enricher events.Enricher, store offset.Store, logger *slog.Logger) (*Pipeline, error) {
-	if cfg == nil {
+// resolves the delivery-failure policy (default drop).
+func New(p Params) (*Pipeline, error) {
+	if p.Config == nil {
 		return nil, fmt.Errorf("pipeline: nil config")
 	}
-	if enricher == nil {
+	if p.Enricher == nil {
 		return nil, fmt.Errorf("pipeline: nil enricher")
 	}
-	if store == nil {
+	if p.Store == nil {
 		return nil, fmt.Errorf("pipeline: nil offset store")
 	}
-	if logger == nil {
+	if p.Logger == nil {
 		return nil, fmt.Errorf("pipeline: nil logger")
 	}
 
-	workers := cfg.Gateway.WorkerThreads
+	workers := p.Config.Gateway.WorkerThreads
 	if workers < 1 {
 		return nil, fmt.Errorf("pipeline: worker_threads must be >= 1, got %d", workers)
 	}
 
-	excludeClouds := make(map[string]bool, len(cfg.DetectionsExcludeClouds))
-	for _, c := range cfg.DetectionsExcludeClouds {
+	excludeClouds := make(map[string]bool, len(p.Config.DetectionsExcludeClouds))
+	for _, c := range p.Config.DetectionsExcludeClouds {
 		excludeClouds[c] = true
 	}
 
-	policy, err := parseDeliveryPolicy(cfg.Events.DeliveryFailure)
+	policy, err := parseDeliveryPolicy(p.Config.Events.DeliveryFailure)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Pipeline{
 		workers:       workers,
-		backends:      backends,
-		enricher:      enricher,
+		backends:      p.Backends,
+		enricher:      p.Enricher,
 		excludeClouds: excludeClouds,
-		sevThreshold:  cfg.Events.SeverityThreshold,
-		olderThanDays: cfg.Events.OlderThanDaysThreshold,
+		sevThreshold:  p.Config.Events.SeverityThreshold,
+		olderThanDays: p.Config.Events.OlderThanDaysThreshold,
 		policy:        policy,
-		tracker:       newCommitTracker(store, logger),
-		store:         store,
-		logger:        logger,
-		retryBase:     retryBaseDelay,
-		noOpInterval:  noOpWarnInterval,
+		tracker: newCommitTracker(commitTrackerConfig{
+			store:                p.Store,
+			logger:               p.Logger,
+			pendingWarnThreshold: p.Config.Events.PendingWarnThreshold,
+			pendingMax:           p.Config.Events.PendingMax,
+		}),
+		store:        p.Store,
+		logger:       p.Logger,
+		retryBase:    retryBaseDelay,
+		noOpInterval: noOpWarnInterval,
 	}, nil
 }
 
 // parseDeliveryPolicy maps events.delivery_failure to a deliveryPolicy. An
-// empty value defaults to DLQ (matching the config default).
+// empty value defaults to drop (matching the config default). "dlq" is accepted
+// as a deprecated alias for "drop": the old name implied a dead-letter sink that
+// never existed, so it maps to the same discard behavior.
 func parseDeliveryPolicy(raw string) (deliveryPolicy, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "", "dlq":
-		return policyDLQ, nil
+	case "", "drop", "discard", "dlq":
+		return policyDrop, nil
 	case "block":
 		return policyBlock, nil
 	default:
-		return 0, fmt.Errorf("pipeline: invalid delivery_failure %q (want dlq|block)", raw)
+		return 0, fmt.Errorf("pipeline: invalid delivery_failure %q (want drop|discard|block)", raw)
 	}
 }
 
@@ -166,10 +188,11 @@ func parseDeliveryPolicy(raw string) (deliveryPolicy, error) {
 // closes in, workers finish the remaining events), then flushes the offset
 // store. It returns the store-flush error, if any.
 //
-// The context is propagated into every backend Process call. Workers range
-// over in rather than selecting on ctx.Done so that events already buffered in
-// the bounded channel are drained on shutdown; a hard second-signal exit is the
-// caller's concern.
+// A single dispatcher goroutine reads in and hands each event to the worker
+// pool over an internal channel; the workers range over that channel rather
+// than selecting on ctx.Done so that events already buffered in the bounded
+// input channel are drained on shutdown (the whole chain terminates on channel
+// close, not on ctx). A hard second-signal exit is the caller's concern.
 func (p *Pipeline) Run(ctx context.Context, in <-chan *events.Event) error {
 	p.logActiveFilters()
 
@@ -181,14 +204,33 @@ func (p *Pipeline) Run(ctx context.Context, in <-chan *events.Event) error {
 		p.watchNoOp(ctx, stop)
 	})
 
+	// One dispatcher records each event as received — in strict stream order,
+	// which the in-order commit watermark depends on — samples the queue depth
+	// from this single goroutine, and forwards to the workers. Recording from N
+	// workers instead would order the received offsets by scheduling luck and let
+	// the watermark skip a lower offset that had not yet been recorded in flight.
+	// The forward blocks (no ctx select) so buffered events are drained on
+	// shutdown; the chain unwinds when the producer closes in.
+	work := make(chan *events.Event)
+	var disp sync.WaitGroup
+	disp.Go(func() {
+		defer close(work)
+		for ev := range in {
+			metrics.QueueDepth.Set(float64(len(in)))
+			p.markReceived(ctx, ev)
+			work <- ev
+		}
+	})
+
 	var wg sync.WaitGroup
 	for i := 0; i < p.workers; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			p.worker(ctx, id, in)
+			p.worker(ctx, id, work)
 		}(i)
 	}
+	disp.Wait()
 	wg.Wait()
 
 	close(stop)
@@ -256,13 +298,13 @@ func shouldWarnNoOp(received, filtered uint64) bool {
 	return received > 0 && filtered >= received
 }
 
-// worker consumes events until in is closed. Each event is dispatched inside a
-// panic-recovery boundary so one poison event never kills the worker — a
-// faithful port of Python's blanket "except Exception" in WorkerThread.run.
-func (p *Pipeline) worker(ctx context.Context, id int, in <-chan *events.Event) {
+// worker consumes events from the dispatcher until the channel is closed. Each
+// event is dispatched inside a panic-recovery boundary so one poison event
+// never kills the worker — a faithful port of Python's blanket "except
+// Exception" in WorkerThread.run.
+func (p *Pipeline) worker(ctx context.Context, id int, work <-chan *events.Event) {
 	logger := p.logger.With("component", "pipeline", "worker", id)
-	for ev := range in {
-		metrics.QueueDepth.Set(float64(len(in)))
+	for ev := range work {
 		p.safeDispatch(ctx, logger, ev)
 	}
 }
@@ -272,7 +314,7 @@ func (p *Pipeline) worker(ctx context.Context, id int, in <-chan *events.Event) 
 // faithful port of Python's blanket "except Exception" in WorkerThread.run.
 //
 // A recovered panic is treated as a delivery failure subject to the configured
-// policy: under DLQ (default) the event is dead-lettered and its watermark
+// policy: under drop (default) the event is discarded and its watermark
 // advances, so one poison event cannot wedge a feed's resume offset (and force
 // unbounded duplicate re-delivery of every later event) forever; under block
 // the watermark is held, matching a non-panicking block-policy failure.
@@ -297,11 +339,11 @@ func (p *Pipeline) safeDispatch(ctx context.Context, logger *slog.Logger, ev *ev
 			)
 			return
 		}
-		metrics.EventsDeadLettered.Inc()
-		logger.Error("dead-lettering panicked event",
+		metrics.EventsDroppedAfterRetry.Inc()
+		logger.Error("dropping panicked event after recovery",
 			"feed_id", ev.FeedID,
 			"offset", ev.Offset(),
-			"dead_letter", true,
+			"dropped", true,
 		)
 		p.markDone(ctx, logger, ev)
 	}()
@@ -310,7 +352,7 @@ func (p *Pipeline) safeDispatch(ctx context.Context, logger *slog.Logger, ev *ev
 
 // dispatch applies the three gates to select the backends for this event, then
 // delivers to each. The event's offset is marked done (advancing the watermark)
-// only after every dispatched-to backend succeeds or is dead-lettered. An event
+// only after every dispatched-to backend succeeds or is dropped. An event
 // that passes zero backends is trivially handled.
 //
 // Three gates, in order (port of Backends.process, fig/backends/__init__.py):
@@ -321,7 +363,7 @@ func (p *Pipeline) safeDispatch(ctx context.Context, logger *slog.Logger, ev *ev
 //
 // The event is wrapped once in an EnrichedEvent so host-detail lookups are
 // memoized across the gates and every backend. A terminal enrichment failure at
-// gate 2 is routed through the delivery-failure policy (dead-letter or block); a
+// gate 2 is routed through the delivery-failure policy (drop or block); a
 // context cancellation holds the watermark for retry on the next run.
 func (p *Pipeline) dispatch(ctx context.Context, logger *slog.Logger, ev *events.Event) {
 	metrics.EventsReceived.Inc()
@@ -348,7 +390,7 @@ func (p *Pipeline) dispatch(ctx context.Context, logger *slog.Logger, ev *events
 		}
 		relevant, err := p.cloudDetectionRelevant(ctx, enriched)
 		if err != nil {
-			p.handleEnrichmentFailure(ctx, logger, ev, err)
+			p.handleEnrichmentFailure(ctx, enrichFailureInput{logger: logger, event: ev, err: err})
 			return
 		}
 		if !relevant {
@@ -371,17 +413,26 @@ func (p *Pipeline) dispatch(ctx context.Context, logger *slog.Logger, ev *events
 	handled := true
 	for _, b := range dispatched {
 		bl := logger.With("backend", b.Name(), "feed_id", ev.FeedID, "offset", ev.Offset())
-		if err := p.deliver(ctx, bl, b, enriched); err != nil {
+		if err := p.deliver(ctx, deliverInput{logger: bl, backend: b, event: enriched}); err != nil {
+			// A deliberate drop is handled but not delivered: record it under
+			// its reason and leave the watermark to advance, without counting a
+			// failure or dropping.
+			var drop *backend.DropError
+			if errors.As(err, &drop) {
+				metrics.EventsDropped.WithLabelValues(b.Name(), drop.Reason).Inc()
+				bl.Debug("backend dropped event", "reason", drop.Reason)
+				continue
+			}
 			metrics.EventsFailed.Inc()
 			if p.policy == policyBlock {
 				bl.Error("backend delivery failed; blocking watermark", "error", err)
 				handled = false
 				continue
 			}
-			metrics.EventsDeadLettered.Inc()
-			bl.Error("backend delivery failed; dead-lettering event",
+			metrics.EventsDroppedAfterRetry.Inc()
+			bl.Error("backend delivery failed; dropping event",
 				"error", err,
-				"dead_letter", true,
+				"dropped", true,
 			)
 			continue
 		}
@@ -393,58 +444,80 @@ func (p *Pipeline) dispatch(ctx context.Context, logger *slog.Logger, ev *events
 	}
 }
 
+// enrichFailureInput carries the event whose gate-2 enrichment lookup failed,
+// the per-event logger, and the terminal error, into handleEnrichmentFailure.
+type enrichFailureInput struct {
+	logger *slog.Logger
+	event  *events.Event
+	err    error
+}
+
 // handleEnrichmentFailure applies the delivery-failure policy to an event whose
 // gate-2 enrichment lookup terminally failed. A context cancellation/deadline is
-// treated as shutdown: the watermark is held (not advanced, not dead-lettered)
+// treated as shutdown: the watermark is held (not advanced, not dropped)
 // so the event is retried on the next run. Any other error bumps the enrichment
-// failure counter and, under DLQ, dead-letters the event (advancing the
+// failure counter and, under drop, discards the event (advancing the
 // watermark); under block, holds the watermark.
-func (p *Pipeline) handleEnrichmentFailure(ctx context.Context, logger *slog.Logger, ev *events.Event, err error) {
-	if utils.IsCanceled(err) {
-		logger.Warn("enrichment aborted by context; holding watermark",
-			"error", err,
-			"feed_id", ev.FeedID,
-			"offset", ev.Offset(),
-			"event_type", ev.EventType(),
+func (p *Pipeline) handleEnrichmentFailure(ctx context.Context, in enrichFailureInput) {
+	if utils.IsCanceled(in.err) {
+		in.logger.Warn("enrichment aborted by context; holding watermark",
+			"error", in.err,
+			"feed_id", in.event.FeedID,
+			"offset", in.event.Offset(),
+			"event_type", in.event.EventType(),
 		)
 		return
 	}
 
 	metrics.EventsEnrichmentFailed.Inc()
 	if p.policy == policyBlock {
-		logger.Error("enrichment failed; blocking watermark",
-			"error", err,
-			"feed_id", ev.FeedID,
-			"offset", ev.Offset(),
+		in.logger.Error("enrichment failed; blocking watermark",
+			"error", in.err,
+			"feed_id", in.event.FeedID,
+			"offset", in.event.Offset(),
 		)
 		return
 	}
-	metrics.EventsDeadLettered.Inc()
-	logger.Error("enrichment failed; dead-lettering event",
-		"error", err,
-		"feed_id", ev.FeedID,
-		"offset", ev.Offset(),
-		"dead_letter", true,
+	metrics.EventsDroppedAfterRetry.Inc()
+	in.logger.Error("enrichment failed; dropping event",
+		"error", in.err,
+		"feed_id", in.event.FeedID,
+		"offset", in.event.Offset(),
+		"dropped", true,
 	)
-	p.markDone(ctx, logger, ev)
+	p.markDone(ctx, in.logger, in.event)
+}
+
+// deliverInput carries the target backend, the enriched event, and the
+// per-backend logger into Pipeline.deliver.
+type deliverInput struct {
+	logger  *slog.Logger
+	backend backend.Backend
+	event   *events.EnrichedEvent
 }
 
 // deliver calls Process with a bounded number of attempts, returning the last
 // error if all attempts fail. Between attempts it waits a linearly growing
 // delay with a per-event skew (de-synchronizing concurrent workers' retries),
 // aborting early if the context is cancelled.
-func (p *Pipeline) deliver(ctx context.Context, logger *slog.Logger, b backend.Backend, ev *events.EnrichedEvent) error {
+func (p *Pipeline) deliver(ctx context.Context, in deliverInput) error {
 	var err error
 	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
-		if err = b.Process(ctx, ev); err == nil {
+		if err = in.backend.Process(ctx, in.event); err == nil {
 			return nil
+		}
+		// A deliberate drop is a terminal, successful-ish outcome: the caller
+		// records it and advances the watermark, so it must not be retried.
+		var drop *backend.DropError
+		if errors.As(err, &drop) {
+			return err
 		}
 		if ctx.Err() != nil {
 			return fmt.Errorf("delivery aborted: %w", ctx.Err())
 		}
 		if attempt < maxDeliveryAttempts {
-			delay := p.retryDelay(attempt, ev.Offset())
-			logger.Warn("backend delivery failed; retrying",
+			delay := p.retryDelay(attempt, in.event.Offset())
+			in.logger.Warn("backend delivery failed; retrying",
 				"attempt", attempt, "retry_in", delay, "error", err)
 			if !utils.Sleep(ctx, delay) {
 				return fmt.Errorf("delivery aborted: %w", ctx.Err())
@@ -464,6 +537,22 @@ func (p *Pipeline) retryDelay(attempt int, offset uint64) time.Duration {
 	}
 	skew := time.Duration(offset%retrySkewMod) * retrySkewUnit
 	return time.Duration(attempt)*p.retryBase + skew
+}
+
+// markReceived records that an event has been dequeued from the ordered stream
+// and is now in flight. It must be called from the single dispatcher goroutine
+// so offsets are recorded in stream order. A tracker error (a failed store load
+// while seeding a feed) is logged and swallowed: the offset is simply not
+// tracked as in-flight, costing at-least-once re-delivery on restart, never
+// loss.
+func (p *Pipeline) markReceived(ctx context.Context, ev *events.Event) {
+	if err := p.tracker.Received(ctx, ev.FeedID, ev.Offset()); err != nil {
+		p.logger.Error("failed to record received offset",
+			"error", err,
+			"feed_id", ev.FeedID,
+			"offset", ev.Offset(),
+		)
+	}
 }
 
 // markDone advances the in-order commit watermark for the event's feed. A

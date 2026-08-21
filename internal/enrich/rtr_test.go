@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/crowdstrike/falcon-integration-gateway/internal/common"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
 )
@@ -17,7 +18,7 @@ import (
 // body observes deltas with no concurrent mutation.
 func TestMetrics_HostAndRTR(t *testing.T) {
 	fake := &fakeClient{
-		ddDevices: []*client.Device{{DeviceID: "dev-1", ServiceProvider: "AWS_EC2_V2"}},
+		ddDevices: []*common.HostDetails{{DeviceID: "dev-1", CloudProvider: "AWS_EC2_V2"}},
 		initSess:  &client.RTRSession{SessionID: "sess-1"},
 		execRes:   &client.RTRCommandResult{CloudRequestID: "cr-1"},
 		statuses:  []*client.RTRCommandStatus{{Complete: true, Stdout: "X = MDM-1\n"}},

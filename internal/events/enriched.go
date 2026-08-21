@@ -3,36 +3,31 @@ package events
 import (
 	"context"
 	"sync"
+
+	"github.com/crowdstrike/falcon-integration-gateway/internal/common"
 )
 
-// HostDetails is the normalized subset of Falcon device details the pipeline
-// and enrichment-consuming backends need. It mirrors the projection the Python
-// gateway read from GetDeviceDetailsV2 (service_provider, service_provider_
-// account_id, instance_id, platform_name), plus the device/sensor identifiers.
-//
-// Known distinguishes a successful lookup that resolved to a real device from
-// the empty-provider fallback used when a device cannot be identified.
-//
-// An Enricher may cache and return the same *HostDetails to concurrent callers,
-// so a value obtained from one is read-only by contract: callers must not mutate
-// its fields.
-type HostDetails struct {
-	Known                  bool
-	DeviceID               string
-	SensorID               string
-	CloudProvider          string
-	CloudProviderAccountID string
-	InstanceID             string
-	Platform               string
+// ArcConfig is the Azure Arc agent configuration read from a non-Azure host's
+// agentconfig.json over RTR. It is the subset of identifiers the Azure backend
+// attaches to a finding so an Arc-connected machine is correlated to its Azure
+// resource. It mirrors the keys the Python gateway projected (AZURE_ARC_KEYS).
+type ArcConfig struct {
+	ResourceName   string
+	ResourceGroup  string
+	SubscriptionID string
+	TenantID       string
+	VMID           string
 }
 
-// Enricher resolves host details and MDM identifiers for a sensor. It is
-// declared here, on the consumer side, so this leaf package can name the
-// enrichment seam without importing the concrete enrich package (which would
-// create an import cycle). The concrete implementation lives in internal/enrich.
+// Enricher resolves host details, MDM identifiers, and Azure Arc configuration
+// for a sensor. It is declared here, on the consumer side, so this leaf package
+// can name the enrichment seam without importing the concrete enrich package
+// (which would create an import cycle). The concrete implementation lives in
+// internal/enrich.
 type Enricher interface {
-	HostDetails(ctx context.Context, sensorID string) (*HostDetails, error)
+	HostDetails(ctx context.Context, sensorID string) (*common.HostDetails, error)
 	MDMIdentifier(ctx context.Context, sensorID, platform string) (string, error)
+	ArcConfig(ctx context.Context, sensorID, platform string) (*ArcConfig, error)
 }
 
 // EnrichedEvent pairs a raw Event with an Enricher and lazily resolves host
@@ -55,8 +50,12 @@ type EnrichedEvent struct {
 	enricher Enricher
 
 	once    sync.Once
-	host    *HostDetails
+	host    *common.HostDetails
 	hostErr error
+
+	arcOnce sync.Once
+	arc     *ArcConfig
+	arcErr  error
 }
 
 // NewEnrichedEvent wraps ev with enricher, deferring any lookup until an
@@ -67,11 +66,20 @@ func NewEnrichedEvent(ev *Event, enricher Enricher) *EnrichedEvent {
 
 // hostDetails performs the single memoized host-details lookup for this event,
 // keyed on the event's sensor id.
-func (e *EnrichedEvent) hostDetails(ctx context.Context) (*HostDetails, error) {
+func (e *EnrichedEvent) hostDetails(ctx context.Context) (*common.HostDetails, error) {
 	e.once.Do(func() {
 		e.host, e.hostErr = e.enricher.HostDetails(ctx, e.SensorID())
 	})
 	return e.host, e.hostErr
+}
+
+// Host returns the full resolved host details, triggering the memoized
+// host-details lookup. Backends that report many host attributes (e.g. AWS
+// Security Hub) read the whole projection through this accessor rather than one
+// field-accessor call per attribute. The returned value is read-only by
+// contract (see HostDetails).
+func (e *EnrichedEvent) Host(ctx context.Context) (*common.HostDetails, error) {
+	return e.hostDetails(ctx)
 }
 
 // CloudProvider returns the resolved cloud service provider ("AWS", "Azure",
@@ -82,6 +90,19 @@ func (e *EnrichedEvent) CloudProvider(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return h.CloudProvider, nil
+}
+
+// MatchesProvider reports whether the event's resolved cloud provider satisfies
+// match. When the provider cannot be resolved it fails open (returns true): the
+// event proceeds to Process, which surfaces the enrichment error so the
+// pipeline's delivery-failure policy governs rather than silently dropping the
+// detection. Detection backends use this as their per-event relevance filter.
+func MatchesProvider(ctx context.Context, ev *EnrichedEvent, match func(string) bool) bool {
+	provider, err := ev.CloudProvider(ctx)
+	if err != nil {
+		return true
+	}
+	return match(provider)
 }
 
 // Platform returns the resolved OS platform (e.g. "Windows", "Mac", "Linux"),
@@ -123,4 +144,20 @@ func (e *EnrichedEvent) MDMIdentifier(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return e.enricher.MDMIdentifier(ctx, e.SensorID(), h.Platform)
+}
+
+// ArcConfig returns the device's Azure Arc configuration. It first resolves host
+// details to learn the platform (the agentconfig.json path differs by OS), then
+// delegates to the enricher; a host-details failure short-circuits without an
+// Arc lookup. The result (or error) is memoized per event so repeated backend
+// access performs the RTR fetch at most once.
+func (e *EnrichedEvent) ArcConfig(ctx context.Context) (*ArcConfig, error) {
+	h, err := e.hostDetails(ctx)
+	if err != nil {
+		return nil, err
+	}
+	e.arcOnce.Do(func() {
+		e.arc, e.arcErr = e.enricher.ArcConfig(ctx, e.SensorID(), h.Platform)
+	})
+	return e.arc, e.arcErr
 }

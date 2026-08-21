@@ -1,10 +1,12 @@
-// Package backend defines the pluggable backend contract and a single
-// source-of-truth registry.
+// Package backend defines the pluggable backend contract and the registry that
+// instantiates the set enabled by config.
 //
-// It is a port of the Backend contract and dispatch logic in
-// fig/backends/__init__.py. Each backend registers a Constructor under a name;
-// Build instantiates the set enabled by config. The registry replaces the
-// Python "four coordinated edits with duplicated ALL_BACKENDS".
+// Each backend registers a Constructor under a name in its init(); Build
+// instantiates the enabled set. Adding a backend is a new package plus a
+// blank import (see internal/cli/run.go) so its init() runs. One list must be
+// kept in sync by hand: config.validBackendNames, the startup allow-list, which
+// cannot import this registry without an import cycle. TestBackendNamesMatchConfig
+// fails if the two drift apart.
 package backend
 
 import (
@@ -17,8 +19,7 @@ import (
 
 // AllEventTypes is the sentinel a backend returns from RelevantEventTypes when
 // it accepts every event type. When any enabled backend uses it, the
-// server-side eventType filter union collapses to "no filter" (nil). Port of
-// the "ALL" sentinel in fig/backends/__init__.py.
+// server-side eventType filter union collapses to "no filter" (nil).
 var AllEventTypes = []string{"*"}
 
 // Backend is the contract every backend package implements.
@@ -46,5 +47,5 @@ type Closer interface {
 }
 
 // Constructor builds a Backend from resolved config and a logger. It returns an
-// error to abort startup (port of Python's constructor raising).
+// error to abort startup.
 type Constructor func(cfg *config.Config, logger *slog.Logger) (Backend, error)

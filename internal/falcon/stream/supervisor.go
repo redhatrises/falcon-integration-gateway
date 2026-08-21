@@ -29,20 +29,31 @@ const noStreamsRetryInterval = 10 * time.Second
 // backs off to reconnectMaxInterval rather than hot-looping.
 const healthyRunThreshold = 1 * time.Minute
 
-// Reconnect backoff bounds. The max matches the Python management thread's 60s
-// restart-poll cadence (fig/falcon/stream.py:30); the initial interval keeps a
-// prompt reconnect after a healthy session without hammering on repeated failure.
+// Reconnect backoff bounds, used when the SupervisorConfig leaves them unset.
+// The max matches the Python management thread's 60s restart-poll cadence
+// (fig/falcon/stream.py:30); the initial interval keeps a prompt reconnect after
+// a healthy session without hammering on repeated failure.
 const (
-	reconnectInitialInterval = 1 * time.Second
-	reconnectMaxInterval     = 60 * time.Second
+	defaultReconnectInitialInterval = 1 * time.Second
+	defaultReconnectMaxInterval     = 60 * time.Second
 )
+
+// controlPlane is the subset of the Falcon client the supervisor needs to
+// manage streaming sessions: list the application's streams and refresh a
+// session by partition. Declared here, at the consumer, so the concrete
+// *client.Client is injectable and the session loop is unit-testable without a
+// live platform. *client.Client satisfies it.
+type controlPlane interface {
+	ListStreams(ctx context.Context, appID string) ([]client.Stream, error)
+	Refresh(ctx context.Context, appID string, partition int64) error
+}
 
 // SupervisorConfig holds the immutable inputs to a Supervisor. The app layer
 // extracts these primitives from the resolved config so this package does not
 // depend on internal/config and stays unit-testable without a full Config.
 type SupervisorConfig struct {
 	// Client is the Falcon control-plane client used to list and refresh streams.
-	Client *client.Client
+	Client controlPlane
 	// Store supplies the durable resume offset per feed on each (re)connect and
 	// receives the one-time watermark-floor seed on a feed's first connection.
 	Store offsetStore
@@ -55,10 +66,14 @@ type SupervisorConfig struct {
 	ConfigOffset uint64
 	// StartFromNewest selects whence=2 on the initial connection (events.start_from_newest).
 	StartFromNewest bool
-	// EventTypes is the server-side eventType filter (nil = no filter, P1).
+	// EventTypes is the server-side eventType filter (nil = no filter).
 	EventTypes []string
 	// IdleTimeout bounds the per-connection read-idle watchdog; 0 uses the default.
 	IdleTimeout time.Duration
+	// ReconnectInitialInterval and ReconnectMaxInterval bound the exponential
+	// backoff that spaces session rebuilds; 0 uses the package defaults.
+	ReconnectInitialInterval time.Duration
+	ReconnectMaxInterval     time.Duration
 	// HTTPClient is the long-poll HTTP client; nil builds the streaming default.
 	HTTPClient *http.Client
 	// Logger is the scoped logger; nil uses slog.Default.
@@ -122,7 +137,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 // out is the producer's side of the pipeline channel; the caller owns closing it
 // after Run returns.
 func (s *Supervisor) Run(ctx context.Context, out chan<- *events.Event) error {
-	bo := newReconnectBackOff()
+	bo := s.newReconnectBackOff()
 	firstSession := true
 
 	for {
@@ -288,6 +303,18 @@ func (s *Supervisor) seedFloorFunc(feedID string) func(context.Context, uint64) 
 		s.seeded[feedID] = true
 		s.mu.Unlock()
 
+		// A pinned start offset (events.offset) asks Falcon to resume at that point,
+		// so the first delivered event should land at configOffset+1 and the seeded
+		// floor should equal configOffset. A floor above it means Falcon could not
+		// honor the pin (the offset aged out of retention and the stream began
+		// higher): the events between the pin and the first delivered offset are
+		// gone and the operator's chosen resume point has been superseded. Warn so
+		// this is not silent.
+		if s.cfg.ConfigOffset > 0 && floor > s.cfg.ConfigOffset {
+			s.cfg.Logger.Warn("configured events.offset superseded by stream resume point; earlier events are no longer retained",
+				"feed_id", feedID, "config_offset", s.cfg.ConfigOffset, "floor", floor)
+		}
+
 		s.cfg.Logger.Info("seeded resume watermark floor", "feed_id", feedID, "floor", floor)
 		return nil
 	}
@@ -333,11 +360,20 @@ func (s *Supervisor) refreshStream(ctx context.Context, st client.Stream) error 
 
 // newReconnectBackOff builds the capped exponential backoff used to space
 // session rebuilds. NextBackOff never signals stop, so the supervisor retries
-// forever (capped at reconnectMaxInterval).
-func newReconnectBackOff() *backoff.ExponentialBackOff {
+// forever (capped at the max interval). Unset config bounds fall back to the
+// package defaults.
+func (s *Supervisor) newReconnectBackOff() *backoff.ExponentialBackOff {
+	initial := s.cfg.ReconnectInitialInterval
+	if initial <= 0 {
+		initial = defaultReconnectInitialInterval
+	}
+	maxInterval := s.cfg.ReconnectMaxInterval
+	if maxInterval <= 0 {
+		maxInterval = defaultReconnectMaxInterval
+	}
 	bo := backoff.NewExponentialBackOff()
-	bo.InitialInterval = reconnectInitialInterval
-	bo.MaxInterval = reconnectMaxInterval
+	bo.InitialInterval = initial
+	bo.MaxInterval = maxInterval
 	bo.Reset()
 	return bo
 }

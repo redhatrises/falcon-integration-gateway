@@ -2,10 +2,10 @@ package enrich
 
 import (
 	"context"
-	"time"
 
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 )
 
 // runRTRCommand opens an RTR session on the sensor, runs cmd to completion, and
@@ -21,7 +21,7 @@ func (e *Resolver) runRTRCommand(ctx context.Context, sensorID string, cmd clien
 	}
 	metrics.EnrichRTRSessions.Inc()
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), rtrCleanupTimeout)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), client.RTRCleanupTimeout)
 		defer cancel()
 		if derr := e.client.DeleteRTRSession(cleanupCtx, sess.SessionID); derr != nil {
 			e.logger.WarnContext(ctx, "failed to close RTR session", "sensor_id", sensorID)
@@ -43,22 +43,17 @@ func (e *Resolver) pollCommand(ctx context.Context, cloudRequestID string) (*cli
 	ctx, cancel := context.WithTimeout(ctx, e.mdmTimeout)
 	defer cancel()
 
-	ticker := time.NewTicker(e.pollInterval)
-	defer ticker.Stop()
-
-	for {
-		status, err := e.client.CheckRTRCommandStatus(ctx, cloudRequestID, 0)
+	var status *client.RTRCommandStatus
+	err := utils.PollUntil(ctx, e.pollInterval, func(ctx context.Context) (bool, error) {
+		var err error
+		status, err = e.client.CheckRTRCommandStatus(ctx, cloudRequestID, 0)
 		if err != nil {
-			return nil, err
+			return false, err
 		}
-		if status.Complete {
-			return status, nil
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-ticker.C:
-		}
+		return status.Complete, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	return status, nil
 }

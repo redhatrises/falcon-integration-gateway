@@ -2,25 +2,28 @@
 // plane. It ports fig/falcon/api.py (the FalconAPI class) and the Stream model
 // from fig/falcon/models.py:92-121.
 //
-// P1 scope: authentication + region selection, the Event Streams control-plane
-// calls (list + refresh), and the Stream value type with its regex-derived
-// accessors. Host details and RTR (init/execute/status/fetch-file) are stubbed
-// and return ErrNotImplemented until P2 — see the stubs at the bottom of this
-// file.
+// It covers authentication and region selection, the Event Streams
+// control-plane calls (list + refresh), the Stream value type with its
+// regex-derived accessors, and the host-detail and RTR (init/execute/status/
+// fetch-file) enrichment lookups.
 //
 // The long-poll data feed itself is NOT handled here; a dedicated net/http
 // client in internal/falcon/stream consumes the URL/Token this package
-// surfaces (see the plan, §3).
+// surfaces.
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/crowdstrike/gofalcon/falcon"
 	"github.com/crowdstrike/gofalcon/falcon/client"
@@ -29,14 +32,13 @@ import (
 	"github.com/crowdstrike/gofalcon/falcon/client/real_time_response"
 	"github.com/crowdstrike/gofalcon/falcon/client/real_time_response_admin"
 	"github.com/crowdstrike/gofalcon/falcon/models"
+	"github.com/go-openapi/runtime"
 
+	"github.com/crowdstrike/falcon-integration-gateway/internal/common"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/utils"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/version"
 )
-
-// ErrNotImplemented is returned by the P2 enrichment stubs (device details and
-// RTR) that are declared here but not yet implemented in P1.
-var ErrNotImplemented = errors.New("falcon/client: not implemented in P1 (deferred to P2)")
 
 // NoStreamsError is returned by ListStreams when the Falcon platform reports no
 // available event streams for the given application ID. Ported from
@@ -170,6 +172,28 @@ func (s Stream) FeedID() (string, error) {
 	return m[1], nil
 }
 
+// StreamFields carries the resolved descriptor fields of a Stream. It is the
+// input to NewStream for callers that already hold the raw values (production
+// code obtains Streams from ListStreams).
+type StreamFields struct {
+	Token           string
+	URL             string
+	RefreshInterval int64
+	RefreshURL      string
+}
+
+// NewStream builds a Stream from explicit descriptor fields. It is the exported
+// counterpart to ListStreams for callers that construct a descriptor directly
+// rather than resolving it from the platform response.
+func NewStream(f StreamFields) Stream {
+	return Stream{
+		token:           f.Token,
+		url:             f.URL,
+		refreshInterval: f.RefreshInterval,
+		refreshURL:      f.RefreshURL,
+	}
+}
+
 // ListStreams lists the event streams available for appID and returns them as
 // typed Stream values. When the platform returns no resources, a *NoStreamsError
 // is returned. Port of FalconAPI.streams (fig/falcon/api.py:32-37).
@@ -229,23 +253,9 @@ func (c *Client) Refresh(ctx context.Context, appID string, partition int64) err
 	return nil
 }
 
-// API exposes the underlying gofalcon client for packages (e.g. enrich in P2)
-// that need direct access to Hosts / RTR services not yet wrapped here.
+// API exposes the underlying gofalcon client for packages (e.g. enrich) that
+// need direct access to Hosts / RTR services not yet wrapped here.
 func (c *Client) API() *client.CrowdStrikeAPISpecification { return c.api }
-
-// Device is a host-detail record returned by DeviceDetails. Fields carry the
-// Falcon platform's own vocabulary (service_provider, instance_id, …); the
-// enrichment layer maps them onto its domain projection. Port of the subset of
-// GetDeviceDetailsV2 fields fig/falcon_data.py consumes (host_details,
-// service_provider, service_provider_account_id, instance_id, platform_name).
-type Device struct {
-	DeviceID                 string
-	Hostname                 string
-	PlatformName             string
-	InstanceID               string
-	ServiceProvider          string
-	ServiceProviderAccountID string
-}
 
 // apiError mirrors FalconAPI._command (fig/falcon/api.py:99-113): the generated
 // gofalcon reader only turns a non-2xx HTTP status into a Go error, so a 2xx
@@ -291,7 +301,7 @@ func firstResource[T any](op string, errs []*models.MsaAPIError, resources []*T)
 // and returns the resource list (empty when the platform knows no such device).
 // Port of FalconAPI.device_details (fig/falcon/api.py:47-48), including the
 // _command errors-array check that device_details inherits via _resources.
-func (c *Client) DeviceDetails(ctx context.Context, deviceID string) ([]*Device, error) {
+func (c *Client) DeviceDetails(ctx context.Context, deviceID string) ([]*common.HostDetails, error) {
 	params := hosts.NewGetDeviceDetailsV2ParamsWithContext(ctx).WithIds([]string{deviceID})
 
 	resp, err := c.api.Hosts.GetDeviceDetailsV2(params)
@@ -306,17 +316,31 @@ func (c *Client) DeviceDetails(ctx context.Context, deviceID string) ([]*Device,
 		return nil, err
 	}
 
-	devices := make([]*Device, 0, len(payload.Resources))
+	devices := make([]*common.HostDetails, 0, len(payload.Resources))
 	for _, r := range payload.Resources {
 		if r == nil {
 			continue
 		}
-		d := &Device{
-			Hostname:                 r.Hostname,
-			PlatformName:             r.PlatformName,
-			InstanceID:               r.InstanceID,
-			ServiceProvider:          r.ServiceProvider,
-			ServiceProviderAccountID: r.ServiceProviderAccountID,
+		// Known and SensorID are left zero here; the enricher sets them once it
+		// confirms the sensor resolves to exactly one device.
+		d := &common.HostDetails{
+			Hostname:               r.Hostname,
+			Platform:               r.PlatformName,
+			InstanceID:             r.InstanceID,
+			CloudProvider:          r.ServiceProvider,
+			CloudProviderAccountID: r.ServiceProviderAccountID,
+			MACAddress:             r.MacAddress,
+			ExternalIP:             r.ExternalIP,
+			LocalIP:                r.LocalIP,
+			MachineDomain:          r.MachineDomain,
+			AgentVersion:           r.AgentVersion,
+			LastSeen:               r.LastSeen,
+			OSVersion:              r.OsVersion,
+			SiteName:               r.SiteName,
+			OU:                     r.Ou,
+			Tags:                   r.Tags,
+			ProductTypeDesc:        r.ProductTypeDesc,
+			ZoneGroup:              r.ZoneGroup,
 		}
 		if r.DeviceID != nil {
 			d.DeviceID = *r.DeviceID
@@ -491,8 +515,176 @@ func (c *Client) DeleteRTRSession(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// RTRFetchFile fetches and decrypts a quarantined file over RTR. Port of
-// FalconAPI.rtr_fetch_file (fig/falcon/api.py:77-97). Stubbed in P1.
+// RTRCleanupTimeout bounds the deferred session-close call so it still runs
+// (under a fresh context) when the caller's context is already cancelled. It is
+// exported so callers that open sessions through this client (for example the
+// enrichment layer's own deferred close) bound their cleanup identically.
+const RTRCleanupTimeout = 5 * time.Second
+
+// rtrPollInterval is the delay between command-status polls while waiting for
+// the active-responder get to complete. The wait itself is bounded by the
+// caller's context deadline, not this interval.
+const rtrPollInterval = 2 * time.Second
+
+// RTRFetchFile fetches a quarantined file over RTR and returns the raw extracted
+// bytes (an AES-encrypted 7z blob). Port of FalconAPI.rtr_fetch_file
+// (fig/falcon/api.py:77-97) and RTRSession.get_file (fig/falcon/rtr.py:34-67):
+// open a session, run the active-responder "get <path>", poll to completion,
+// list the session files, match the entry whose cloud request id equals the get
+// command's, and download its extracted contents by sha256. The session is
+// always closed on return.
+//
+// Decryption is deliberately left to the caller: this transport client holds no
+// config and no secrets, so the 7z password never reaches it.
 func (c *Client) RTRFetchFile(ctx context.Context, deviceID, filepath string) ([]byte, error) {
-	return nil, ErrNotImplemented
+	sess, err := c.InitRTRSession(ctx, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), RTRCleanupTimeout)
+		defer cancel()
+		if derr := c.DeleteRTRSession(cleanupCtx, sess.SessionID); derr != nil {
+			c.logger.WarnContext(ctx, "failed to close RTR session after file fetch", "device_id", deviceID)
+		}
+	}()
+
+	cloudRequestID, err := c.rtrExecuteActiveResponder(ctx, sess.SessionID, "get", "get "+filepath)
+	if err != nil {
+		return nil, err
+	}
+
+	status, err := c.pollRTRComplete(ctx, cloudRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if status.Stderr != "" {
+		return nil, fmt.Errorf("falcon/client: rtr fetch file %q on device %s: %s", filepath, deviceID, status.Stderr)
+	}
+
+	files, err := c.rtrListFiles(ctx, sess.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		if f == nil || f.CloudRequestID == nil || *f.CloudRequestID != cloudRequestID {
+			continue
+		}
+		if f.Sha256 == nil || *f.Sha256 == "" {
+			return nil, fmt.Errorf("falcon/client: rtr fetch file %q on device %s: matched file has no sha256", filepath, deviceID)
+		}
+		return c.rtrGetExtractedFileContents(ctx, sess.SessionID, *f.Sha256)
+	}
+	return nil, fmt.Errorf("falcon/client: rtr fetch file %q on device %s: no extracted file for cloud request %s", filepath, deviceID, cloudRequestID)
+}
+
+// rtrExecuteActiveResponder runs an active-responder command in an open session
+// and returns its cloud request id. Wraps RealTimeResponse.RTRExecuteActiveResponderCommand,
+// the endpoint fig/falcon/api.py uses for the file "get".
+func (c *Client) rtrExecuteActiveResponder(ctx context.Context, sessionID, baseCommand, commandString string) (string, error) {
+	body := &models.DomainCommandExecuteRequest{
+		BaseCommand:   &baseCommand,
+		CommandString: &commandString,
+		SessionID:     &sessionID,
+	}
+	params := real_time_response.NewRTRExecuteActiveResponderCommandParamsWithContext(ctx).WithBody(body)
+
+	resp, err := c.api.RealTimeResponse.RTRExecuteActiveResponderCommand(params)
+	if err != nil {
+		return "", fmt.Errorf("falcon/client: rtr execute active responder command: %w", err)
+	}
+	payload := resp.GetPayload()
+	if payload == nil {
+		return "", fmt.Errorf("falcon/client: rtr execute active responder command: empty response")
+	}
+	r, err := firstResource("rtr execute active responder command", payload.Errors, payload.Resources)
+	if err != nil {
+		return "", err
+	}
+	if r.CloudRequestID == nil || *r.CloudRequestID == "" {
+		return "", fmt.Errorf("falcon/client: rtr execute active responder command: missing cloud request id")
+	}
+	return *r.CloudRequestID, nil
+}
+
+// pollRTRComplete polls a queued command by cloud request id until it reports
+// complete, honoring the caller's context deadline between polls. Python's
+// _rtr_wait (fig/falcon/rtr.py) busy-loops without a bound; the poll here is
+// bounded and cancellable by the caller's context.
+func (c *Client) pollRTRComplete(ctx context.Context, cloudRequestID string) (*RTRCommandStatus, error) {
+	var status *RTRCommandStatus
+	err := utils.PollUntil(ctx, rtrPollInterval, func(ctx context.Context) (bool, error) {
+		var err error
+		status, err = c.CheckRTRCommandStatus(ctx, cloudRequestID, 0)
+		if err != nil {
+			return false, err
+		}
+		return status.Complete, nil
+	})
+	switch {
+	case utils.IsCanceled(err):
+		return nil, fmt.Errorf("falcon/client: rtr poll command %s: %w", cloudRequestID, err)
+	case err != nil:
+		return nil, err
+	default:
+		return status, nil
+	}
+}
+
+// rtrListFiles lists the files captured in an open session. Wraps
+// RealTimeResponse.RTRListFiles.
+func (c *Client) rtrListFiles(ctx context.Context, sessionID string) ([]*models.ModelFile, error) {
+	params := real_time_response.NewRTRListFilesParamsWithContext(ctx).WithSessionID(sessionID)
+
+	resp, err := c.api.RealTimeResponse.RTRListFiles(params)
+	if err != nil {
+		return nil, fmt.Errorf("falcon/client: rtr list files: %w", err)
+	}
+	payload := resp.GetPayload()
+	if payload == nil {
+		return nil, fmt.Errorf("falcon/client: rtr list files: empty response")
+	}
+	if err := apiError("rtr list files", payload.Errors); err != nil {
+		return nil, err
+	}
+	return payload.Resources, nil
+}
+
+// rawFileReader is a runtime ClientResponseReader that copies the response body
+// verbatim into w, bypassing the media-type consumer. The generated reader for
+// RTRGetExtractedFileContents runs the body through a consumer that would corrupt
+// a binary 7z blob; copying the raw bytes preserves them regardless of the
+// declared content type.
+type rawFileReader struct {
+	w io.Writer
+}
+
+func (r rawFileReader) ReadResponse(resp runtime.ClientResponse, _ runtime.Consumer) (any, error) {
+	if resp.Code() != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body())
+		return nil, fmt.Errorf("falcon/client: rtr get extracted file contents: status %d: %s", resp.Code(), string(body))
+	}
+	if _, err := io.Copy(r.w, resp.Body()); err != nil {
+		return nil, fmt.Errorf("falcon/client: rtr get extracted file contents: read body: %w", err)
+	}
+	return real_time_response.NewRTRGetExtractedFileContentsOK(r.w), nil
+}
+
+// rtrGetExtractedFileContents downloads the extracted file identified by sha256
+// from an open session and returns its raw bytes. Wraps
+// RealTimeResponse.RTRGetExtractedFileContents with a raw-byte Reader override so
+// the encrypted 7z blob is returned intact.
+func (c *Client) rtrGetExtractedFileContents(ctx context.Context, sessionID, sha256 string) ([]byte, error) {
+	params := real_time_response.NewRTRGetExtractedFileContentsParamsWithContext(ctx).
+		WithSessionID(sessionID).
+		WithSha256(sha256)
+
+	var buf bytes.Buffer
+	_, err := c.api.RealTimeResponse.RTRGetExtractedFileContents(params, &buf, func(op *runtime.ClientOperation) {
+		op.Reader = rawFileReader{w: &buf}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("falcon/client: rtr get extracted file contents: %w", err)
+	}
+	return buf.Bytes(), nil
 }

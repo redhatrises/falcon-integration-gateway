@@ -24,9 +24,15 @@ import (
 
 	// Blank-import each backend so its init() registers a Constructor with the
 	// backend registry before backend.Build looks names up. Add a line here
-	// when introducing a new backend package.
+	// when introducing a new backend package. The aws package is imported
+	// non-blank because Run also calls its credential loader for the
+	// credentials_store overlay.
 	"github.com/crowdstrike/falcon-integration-gateway/internal/backend"
+	awsbackend "github.com/crowdstrike/falcon-integration-gateway/internal/backend/aws"
+	_ "github.com/crowdstrike/falcon-integration-gateway/internal/backend/azure"
+	_ "github.com/crowdstrike/falcon-integration-gateway/internal/backend/gcp"
 	_ "github.com/crowdstrike/falcon-integration-gateway/internal/backend/generic"
+	_ "github.com/crowdstrike/falcon-integration-gateway/internal/backend/workspaceone"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/enrich"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
@@ -78,7 +84,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		"backends", cfg.Backends,
 	)
 
-	store, err := newOffsetStore(cfg)
+	store, err := newOffsetStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -88,12 +94,16 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("app: build backends: %w", err)
 	}
 
+	if err := applyCredentialStore(ctx, cfg, logger); err != nil {
+		return err
+	}
+
 	falconClient, err := client.NewClient(ctx, cfg, logger)
 	if err != nil {
 		return fmt.Errorf("app: build falcon client: %w", err)
 	}
 
-	enricher, err := enrich.New(cfg, falconClient, logger)
+	enricher, err := enrich.New(enrich.Params{Config: cfg, Client: falconClient, Logger: logger})
 	if err != nil {
 		return fmt.Errorf("app: build enricher: %w", err)
 	}
@@ -112,21 +122,44 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("app: build stream supervisor: %w", err)
 	}
 
-	pipe, err := pipeline.New(cfg, backends, enricher, store, logger)
+	pipe, err := pipeline.New(pipeline.Params{
+		Config:   cfg,
+		Backends: backends,
+		Enricher: enricher,
+		Store:    store,
+		Logger:   logger,
+	})
 	if err != nil {
 		return fmt.Errorf("app: build pipeline: %w", err)
 	}
 
-	return run(ctx, cfg, logger, supervisor, pipe, backends)
+	return run(ctx, runComponents{
+		cfg:        cfg,
+		logger:     logger,
+		supervisor: supervisor,
+		pipe:       pipe,
+		backends:   backends,
+	})
+}
+
+// runComponents bundles the constructed daemon components whose goroutine
+// lifecycles run owns. It keeps the wiring in Run a linear, fail-fast sequence
+// and the concurrency in run, in one place.
+type runComponents struct {
+	cfg        *config.Config
+	logger     *slog.Logger
+	supervisor *stream.Supervisor
+	pipe       *pipeline.Pipeline
+	backends   []backend.Backend
 }
 
 // run owns the goroutine lifecycles once every component is constructed. It is
 // split from Run so the wiring above stays a linear, fail-fast sequence and the
 // concurrency lives in one place.
-func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, supervisor *stream.Supervisor, pipe *pipeline.Pipeline, backends []backend.Backend) error {
-	bufferSize := queueDepth(cfg)
-	events := make(chan *events.Event, bufferSize)
-	logger.Info("event channel bounded", "queue_depth", bufferSize)
+func run(ctx context.Context, c runComponents) error {
+	bufferSize := queueDepth(c.cfg)
+	eventCh := make(chan *events.Event, bufferSize)
+	c.logger.Info("event channel bounded", "queue_depth", bufferSize)
 
 	// The pipeline drains on a context decoupled from the signal context so
 	// that, on shutdown, buffered events are delivered to completion with a live
@@ -142,8 +175,8 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, superviso
 	// it returns. Graceful shutdown surfaces as a context error, which is not a
 	// failure of the daemon.
 	g.Go(func() error {
-		defer close(events)
-		if err := supervisor.Run(gctx, events); err != nil && !utils.IsCanceled(err) {
+		defer close(eventCh)
+		if err := c.supervisor.Run(gctx, eventCh); err != nil && !utils.IsCanceled(err) {
 			return fmt.Errorf("app: stream supervisor: %w", err)
 		}
 		return nil
@@ -152,36 +185,72 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, superviso
 	// Consumer: the pipeline owns closing the offset store when Run returns, so
 	// this layer must not close it as well.
 	g.Go(func() error {
-		if err := pipe.Run(drainCtx, events); err != nil {
+		if err := c.pipe.Run(drainCtx, eventCh); err != nil {
 			return fmt.Errorf("app: pipeline: %w", err)
 		}
 		return nil
 	})
 
-	if cfg.Gateway.MetricsAddr != "" {
+	if c.cfg.Gateway.MetricsAddr != "" {
 		g.Go(func() error {
-			return serveMetrics(gctx, cfg.Gateway.MetricsAddr, logger)
+			return serveMetrics(gctx, c.cfg.Gateway.MetricsAddr, c.logger)
 		})
 	}
 
 	err := g.Wait()
 
-	closeBackends(logger, backends)
+	closeBackends(c.logger, c.backends)
 
 	if err != nil {
 		return err
 	}
-	logger.Info("Falcon Integration Gateway stopped")
+	c.logger.Info("Falcon Integration Gateway stopped")
+	return nil
+}
+
+// applyCredentialStore overlays Falcon API credentials from an external store
+// onto cfg when credentials_store.store is set, so they take precedence over
+// any file/env values before the Falcon client is built. An unset store is a
+// no-op. Resolved credentials are secret and are never logged.
+func applyCredentialStore(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+	store := cfg.Credentials.Store
+	if store == "" {
+		return nil
+	}
+	creds, err := awsbackend.LoadFalconCredentials(ctx, awsbackend.CredentialStoreConfig{
+		Store:                 store,
+		SSMRegion:             cfg.SSM.Region,
+		SSMClientIDParam:      cfg.SSM.SSMClientID,
+		SSMClientSecretParam:  cfg.SSM.SSMClientSecret,
+		SecretsRegion:         cfg.SecretsManager.Region,
+		SecretName:            cfg.SecretsManager.SecretsManagerSecretName,
+		SecretClientIDKey:     cfg.SecretsManager.SecretsManagerClientIDKey,
+		SecretClientSecretKey: cfg.SecretsManager.SecretsManagerClientSecretKey,
+	})
+	if err != nil {
+		return fmt.Errorf("app: load credentials from %q store: %w", store, err)
+	}
+	cfg.Falcon.ClientID = creds.ClientID
+	cfg.Falcon.ClientSecret = creds.ClientSecret
+	logger.Info("loaded Falcon credentials from external store", "store", store)
 	return nil
 }
 
 // newOffsetStore selects the offset store implementation from
-// events.offset_store. "memory" is the ephemeral, test-oriented store; anything
-// else (the default "file") is the durable JSON store at offset_store_path.
-func newOffsetStore(cfg *config.Config) (offset.Store, error) {
+// events.offset_store. "memory" is the ephemeral, test-oriented store; "ssm"
+// persists the feed→offset map to an AWS Systems Manager parameter (for
+// stateless containers with no durable disk); anything else (the default
+// "file") is the durable JSON store at offset_store_path.
+func newOffsetStore(ctx context.Context, cfg *config.Config) (offset.Store, error) {
 	switch cfg.Events.OffsetStore {
 	case "memory":
 		return offset.NewMemory(), nil
+	case "ssm":
+		store, err := offset.NewSSM(ctx, cfg.Events.OffsetStoreRegion, cfg.Events.OffsetStorePath)
+		if err != nil {
+			return nil, fmt.Errorf("app: open offset store: %w", err)
+		}
+		return store, nil
 	case "", "file":
 		store, err := offset.NewFile(cfg.Events.OffsetStorePath)
 		if err != nil {
@@ -189,7 +258,7 @@ func newOffsetStore(cfg *config.Config) (offset.Store, error) {
 		}
 		return store, nil
 	default:
-		return nil, fmt.Errorf("app: unknown offset_store %q (want file|memory)", cfg.Events.OffsetStore)
+		return nil, fmt.Errorf("app: unknown offset_store %q (want file|memory|ssm)", cfg.Events.OffsetStore)
 	}
 }
 

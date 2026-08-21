@@ -2,7 +2,6 @@ package enrich
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
@@ -22,30 +21,24 @@ const (
 // MDM identifier; any other platform resolves to an empty string with no
 // session opened. The RTR session is always closed once the lookup returns.
 func (e *Resolver) MDMIdentifier(ctx context.Context, sensorID, platform string) (string, error) {
-	if id, ok := e.mdmCache.Get(sensorID); ok {
-		return id, nil
-	}
-
-	var (
-		baseCommand string
-		commandLine string
-		admin       bool
-		parse       func(string) string
-	)
-	switch platform {
-	case "Windows":
-		baseCommand, commandLine, admin, parse = "reg query", winMDMCommand, false, parseWindowsMDM
-	case "Mac":
-		baseCommand, commandLine, admin, parse = "runscript", macMDMCommand, true, parseMacMDM
-	default:
-		return "", nil
-	}
-
-	v, err, _ := e.mdmGroup.Do(sensorID, func() (any, error) {
-		// A concurrent caller may have populated the cache while this flight was
-		// queued; re-check before opening a session.
-		if id, ok := e.mdmCache.Get(sensorID); ok {
-			return id, nil
+	// The platform switch lives inside the loader so it runs only on a cache
+	// miss, preserving the legacy cache-before-dispatch ordering. Platforms
+	// without an MDM identifier resolve to "" without opening a session and are
+	// left uncached.
+	id, _, err := e.mdm.get(sensorID, func() (string, bool, error) {
+		var (
+			baseCommand string
+			commandLine string
+			admin       bool
+			parse       func(string) string
+		)
+		switch platform {
+		case "Windows":
+			baseCommand, commandLine, admin, parse = "reg query", winMDMCommand, false, parseWindowsMDM
+		case "Mac":
+			baseCommand, commandLine, admin, parse = "runscript", macMDMCommand, true, parseMacMDM
+		default:
+			return "", false, nil
 		}
 
 		status, err := e.runRTRCommand(ctx, sensorID, client.RTRCommand{
@@ -54,7 +47,7 @@ func (e *Resolver) MDMIdentifier(ctx context.Context, sensorID, platform string)
 			Admin:         admin,
 		})
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 
 		// A command that wrote to stderr produced no usable identifier; treat it
@@ -64,15 +57,10 @@ func (e *Resolver) MDMIdentifier(ctx context.Context, sensorID, platform string)
 		if status.Stderr == "" {
 			id = parse(status.Stdout)
 		}
-		e.mdmCache.Add(sensorID, id)
-		return id, nil
+		return id, true, nil
 	})
 	if err != nil {
 		return "", err
-	}
-	id, ok := v.(string)
-	if !ok {
-		return "", fmt.Errorf("enrich: unexpected MDM result type %T", v)
 	}
 	return id, nil
 }

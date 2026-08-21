@@ -1,10 +1,15 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
 
 // loadFresh loads config with the given path, ensuring no stray config.ini in
@@ -47,6 +52,9 @@ func TestDefaultsApplyWithNoFileOrEnv(t *testing.T) {
 	}
 	if cfg.WorkspaceOne.SyslogPort != 6514 {
 		t.Errorf("workspaceone.syslog_port = %d, want 6514", cfg.WorkspaceOne.SyslogPort)
+	}
+	if cfg.WorkspaceOne.TLSVerify {
+		t.Errorf("workspaceone.tls_verify = true, want false (parity default)")
 	}
 	if cfg.Events.OffsetStore != "file" {
 		t.Errorf("events.offset_store = %q, want file", cfg.Events.OffsetStore)
@@ -130,6 +138,48 @@ func TestAWSRegionDualBind(t *testing.T) {
 	if cfg.AWSSQS.Region != "eu-central-1" {
 		t.Errorf("aws_sqs.region = %q, want eu-central-1 (dual bind)", cfg.AWSSQS.Region)
 	}
+}
+
+// TestFalconCloudRegionAlias verifies both the primary FALCON_CLOUD name and the
+// legacy FALCON_CLOUD_REGION alias bind to falcon.cloud, and that the primary
+// name wins when both are set.
+func TestFalconCloudRegionAlias(t *testing.T) {
+	t.Run("primary name", func(t *testing.T) {
+		chdir(t, t.TempDir())
+		t.Setenv("FALCON_CLOUD", "us-2")
+		cfg, err := Load("", nil)
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Falcon.CloudRegion != "us-2" {
+			t.Errorf("falcon.cloud = %q, want us-2", cfg.Falcon.CloudRegion)
+		}
+	})
+
+	t.Run("legacy alias", func(t *testing.T) {
+		chdir(t, t.TempDir())
+		t.Setenv("FALCON_CLOUD_REGION", "eu-1")
+		cfg, err := Load("", nil)
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Falcon.CloudRegion != "eu-1" {
+			t.Errorf("falcon.cloud = %q, want eu-1 (FALCON_CLOUD_REGION alias)", cfg.Falcon.CloudRegion)
+		}
+	})
+
+	t.Run("primary beats alias", func(t *testing.T) {
+		chdir(t, t.TempDir())
+		t.Setenv("FALCON_CLOUD", "us-1")
+		t.Setenv("FALCON_CLOUD_REGION", "us-2")
+		cfg, err := Load("", nil)
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		if cfg.Falcon.CloudRegion != "us-1" {
+			t.Errorf("falcon.cloud = %q, want us-1 (FALCON_CLOUD takes precedence)", cfg.Falcon.CloudRegion)
+		}
+	})
 }
 
 func TestMissingExplicitConfigFileErrors(t *testing.T) {
@@ -268,7 +318,7 @@ func TestValidateBackendSubset(t *testing.T) {
 	}
 }
 
-func TestEnrichDefaults(t *testing.T) {
+func TestCacheDefaults(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
 
@@ -276,40 +326,55 @@ func TestEnrichDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if cfg.Enrich.CacheSize != 8192 {
-		t.Errorf("enrich.cache_size = %d, want 8192", cfg.Enrich.CacheSize)
+	if cfg.Cache.Size != 8192 {
+		t.Errorf("cache.size = %d, want 8192", cfg.Cache.Size)
 	}
-	if cfg.Enrich.CacheTTL != "1h" {
-		t.Errorf("enrich.cache_ttl = %q, want 1h", cfg.Enrich.CacheTTL)
+	if cfg.Cache.TTL != "1h" {
+		t.Errorf("cache.ttl = %q, want 1h", cfg.Cache.TTL)
 	}
-	if cfg.Enrich.CacheTTLDuration != time.Hour {
-		t.Errorf("enrich.CacheTTLDuration = %v, want 1h", cfg.Enrich.CacheTTLDuration)
+	if cfg.Cache.TTLDuration != time.Hour {
+		t.Errorf("cache.TTLDuration = %v, want 1h", cfg.Cache.TTLDuration)
 	}
 }
 
-func TestEnrichEnvOverride(t *testing.T) {
+func TestCacheEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
 
-	t.Setenv("ENRICH_CACHE_SIZE", "256")
-	t.Setenv("ENRICH_CACHE_TTL", "30m")
+	t.Setenv("CACHE_SIZE", "256")
+	t.Setenv("CACHE_TTL", "30m")
 
 	cfg, err := Load("", nil)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
-	if cfg.Enrich.CacheSize != 256 {
-		t.Errorf("enrich.cache_size = %d, want 256 (env override)", cfg.Enrich.CacheSize)
+	if cfg.Cache.Size != 256 {
+		t.Errorf("cache.size = %d, want 256 (env override)", cfg.Cache.Size)
 	}
-	if cfg.Enrich.CacheTTL != "30m" {
-		t.Errorf("enrich.cache_ttl = %q, want 30m (env override)", cfg.Enrich.CacheTTL)
+	if cfg.Cache.TTL != "30m" {
+		t.Errorf("cache.ttl = %q, want 30m (env override)", cfg.Cache.TTL)
 	}
-	if cfg.Enrich.CacheTTLDuration != 30*time.Minute {
-		t.Errorf("enrich.CacheTTLDuration = %v, want 30m (env override)", cfg.Enrich.CacheTTLDuration)
+	if cfg.Cache.TTLDuration != 30*time.Minute {
+		t.Errorf("cache.TTLDuration = %v, want 30m (env override)", cfg.Cache.TTLDuration)
 	}
 }
 
-func TestValidateEnrich(t *testing.T) {
+func TestWorkspaceOneTLSVerifyEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	t.Setenv("WORKSPACEONE_TLS_VERIFY", "true")
+
+	cfg, err := Load("", nil)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.WorkspaceOne.TLSVerify {
+		t.Errorf("workspaceone.tls_verify = false, want true (env override)")
+	}
+}
+
+func TestValidateCache(t *testing.T) {
 	tests := []struct {
 		name      string
 		cacheSize int
@@ -327,8 +392,8 @@ func TestValidateEnrich(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validGenericConfig()
-			cfg.Enrich.CacheSize = tt.cacheSize
-			cfg.Enrich.CacheTTL = tt.cacheTTL
+			cfg.Cache.Size = tt.cacheSize
+			cfg.Cache.TTL = tt.cacheTTL
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected validation error")
@@ -380,7 +445,7 @@ func validGenericConfig() *Config {
 			SeverityThreshold:      2,
 			OlderThanDaysThreshold: 21,
 			OffsetStore:            "file",
-			DeliveryFailure:        "dlq",
+			DeliveryFailure:        "drop",
 		},
 		Logging: LoggingConfig{Level: "INFO"},
 		Falcon: FalconConfig{
@@ -389,7 +454,7 @@ func validGenericConfig() *Config {
 			ReconnectRetryCount: 36,
 		},
 		Generic:  GenericConfig{EventTypes: "ALL"},
-		Enrich:   EnrichConfig{CacheSize: 8192, CacheTTL: "1h"},
+		Cache:    CacheConfig{Size: 8192, TTL: "1h"},
 		Backends: []string{"GENERIC"},
 	}
 }
@@ -406,4 +471,193 @@ func chdir(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(prev) })
+}
+
+// newFlagSet returns a flag set with the full config catalog registered, as the
+// cobra root command does before Load binds it.
+func newFlagSet(t *testing.T) *pflag.FlagSet {
+	t.Helper()
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	RegisterFlags(fs)
+	return fs
+}
+
+// loadWithFlags parses args into a freshly registered flag set and loads config
+// from a temp CWD (no config file), so only flags/env/defaults are in play.
+func loadWithFlags(t *testing.T, args ...string) *Config {
+	t.Helper()
+	chdir(t, t.TempDir())
+	fs := newFlagSet(t)
+	if err := fs.Parse(args); err != nil {
+		t.Fatalf("Parse(%v) error: %v", args, err)
+	}
+	cfg, err := Load("", fs)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	return cfg
+}
+
+func TestFlagsSetTypedFields(t *testing.T) {
+	cfg := loadWithFlags(t,
+		"--worker-threads=9",
+		"--falcon-cloud=us-2",
+		"--start-from-newest",
+		"--offset=123",
+		"--aws-confirm-instance=false",
+		"--cache-size=256",
+		"--backends=AWS,GENERIC",
+	)
+
+	if cfg.Gateway.WorkerThreads != 9 {
+		t.Errorf("worker_threads = %d, want 9", cfg.Gateway.WorkerThreads)
+	}
+	if cfg.Falcon.CloudRegion != "us-2" {
+		t.Errorf("cloud = %q, want us-2", cfg.Falcon.CloudRegion)
+	}
+	if !cfg.Events.StartFromNewest {
+		t.Errorf("start_from_newest = false, want true")
+	}
+	if cfg.Events.Offset != 123 {
+		t.Errorf("offset = %d, want 123", cfg.Events.Offset)
+	}
+	if cfg.AWS.ConfirmInstance {
+		t.Errorf("aws.confirm_instance = true, want false")
+	}
+	if cfg.Cache.Size != 256 {
+		t.Errorf("cache.size = %d, want 256", cfg.Cache.Size)
+	}
+	// Derived slice field is computed from the flag-provided string.
+	if want := []string{"AWS", "GENERIC"}; !slices.Equal(cfg.Backends, want) {
+		t.Errorf("Backends = %v, want %v", cfg.Backends, want)
+	}
+}
+
+func TestChangedFlagBeatsEnv(t *testing.T) {
+	t.Setenv("FIG_WORKER_THREADS", "5")
+	cfg := loadWithFlags(t, "--worker-threads=9")
+	if cfg.Gateway.WorkerThreads != 9 {
+		t.Errorf("worker_threads = %d, want 9 (flag beats env)", cfg.Gateway.WorkerThreads)
+	}
+}
+
+func TestUnchangedFlagYieldsEnv(t *testing.T) {
+	t.Setenv("FIG_WORKER_THREADS", "5")
+	cfg := loadWithFlags(t) // flag registered but not set
+	if cfg.Gateway.WorkerThreads != 5 {
+		t.Errorf("worker_threads = %d, want 5 (env, flag unchanged)", cfg.Gateway.WorkerThreads)
+	}
+}
+
+func TestUnsetFlagYieldsDefault(t *testing.T) {
+	cfg := loadWithFlags(t) // neither flag nor env
+	if cfg.Gateway.WorkerThreads != 4 {
+		t.Errorf("worker_threads = %d, want 4 (default)", cfg.Gateway.WorkerThreads)
+	}
+}
+
+func TestSettingsCatalogInvariants(t *testing.T) {
+	seenKey := map[string]bool{}
+	for _, s := range settings {
+		if s.Key == "" {
+			t.Errorf("setting has empty Key: %+v", s)
+		}
+		if seenKey[s.Key] {
+			t.Errorf("duplicate Key %q", s.Key)
+		}
+		seenKey[s.Key] = true
+
+		if s.Flag == "" {
+			continue
+		}
+		switch s.Default.(type) {
+		case string, int, uint64, bool:
+		default:
+			t.Errorf("setting %q has unsupported Default type %T", s.Key, s.Default)
+		}
+	}
+}
+
+// TestEverySettingHasValidGroup protects the data-driven contract: any setting
+// that defines a Flag must name a group in groupOrder, so a newly added flag
+// can't silently fall into the RegisterFlags catch-all bucket.
+func TestEverySettingHasValidGroup(t *testing.T) {
+	valid := map[string]bool{}
+	for _, g := range groupOrder {
+		valid[g] = true
+	}
+	for _, s := range settings {
+		if s.Flag == "" {
+			continue
+		}
+		if !valid[s.Group] {
+			t.Errorf("flag %q has group %q not in groupOrder %v", s.Flag, s.Group, groupOrder)
+		}
+	}
+}
+
+// TestRegisterFlagsGroups verifies RegisterFlags returns groups in groupOrder
+// (no catch-all appended) and that every catalog flag lands in exactly one
+// group and on the command flag set — nothing dropped or duplicated.
+func TestRegisterFlagsGroups(t *testing.T) {
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	groups := RegisterFlags(fs)
+
+	names := make([]string, 0, len(groups))
+	for _, g := range groups {
+		names = append(names, g.Name)
+	}
+	if !slices.Equal(names, groupOrder) {
+		t.Fatalf("group names = %v, want %v", names, groupOrder)
+	}
+
+	want := 0
+	for _, s := range settings {
+		if s.Flag != "" {
+			want++
+		}
+	}
+
+	seen := map[string]int{}
+	total := 0
+	for _, g := range groups {
+		g.FlagSet.VisitAll(func(f *pflag.Flag) {
+			seen[f.Name]++
+			total++
+		})
+	}
+	if total != want {
+		t.Errorf("grouped flag count = %d, want %d", total, want)
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Errorf("flag %q appears in %d groups, want 1", name, n)
+		}
+		if fs.Lookup(name) == nil {
+			t.Errorf("flag %q not added to command flag set", name)
+		}
+	}
+}
+
+// TestFlagDefaultMatchesViperDefault guards the single-source-of-truth claim:
+// each registered flag's default string must equal the viper SetDefault value
+// for the same key, so --help and precedence resolution stay consistent.
+func TestFlagDefaultMatchesViperDefault(t *testing.T) {
+	fs := newFlagSet(t)
+	v := viper.New()
+	setDefaults(v)
+
+	for _, s := range settings {
+		if s.Flag == "" {
+			continue
+		}
+		flag := fs.Lookup(s.Flag)
+		if flag == nil {
+			t.Errorf("flag %q not registered for key %q", s.Flag, s.Key)
+			continue
+		}
+		if got, want := flag.DefValue, fmt.Sprint(v.Get(s.Key)); got != want {
+			t.Errorf("key %q: flag default %q != viper default %q", s.Key, got, want)
+		}
+	}
 }

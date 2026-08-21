@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	"github.com/crowdstrike/falcon-integration-gateway/internal/common"
 )
 
 // fakeEnricher is a hand-written Enricher double that records how many times
@@ -12,20 +14,25 @@ import (
 type fakeEnricher struct {
 	mu sync.Mutex
 
-	host    *HostDetails
+	host    *common.HostDetails
 	hostErr error
 	mdm     string
 	mdmErr  error
+	arc     *ArcConfig
+	arcErr  error
 
 	hostCalls int
 	mdmCalls  int
+	arcCalls  int
 
 	lastHostSensorID string
 	lastMDMSensorID  string
 	lastMDMPlatform  string
+	lastArcSensorID  string
+	lastArcPlatform  string
 }
 
-func (f *fakeEnricher) HostDetails(_ context.Context, sensorID string) (*HostDetails, error) {
+func (f *fakeEnricher) HostDetails(_ context.Context, sensorID string) (*common.HostDetails, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hostCalls++
@@ -40,6 +47,15 @@ func (f *fakeEnricher) MDMIdentifier(_ context.Context, sensorID, platform strin
 	f.lastMDMSensorID = sensorID
 	f.lastMDMPlatform = platform
 	return f.mdm, f.mdmErr
+}
+
+func (f *fakeEnricher) ArcConfig(_ context.Context, sensorID, platform string) (*ArcConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.arcCalls++
+	f.lastArcSensorID = sensorID
+	f.lastArcPlatform = platform
+	return f.arc, f.arcErr
 }
 
 func (f *fakeEnricher) counts() (int, int) {
@@ -59,7 +75,7 @@ func eventWithSensor(sensorID string) *Event {
 }
 
 func TestEnrichedEvent_FieldAccessorsMemoizeSingleFetch(t *testing.T) {
-	f := &fakeEnricher{host: &HostDetails{
+	f := &fakeEnricher{host: &common.HostDetails{
 		Known:                  true,
 		DeviceID:               "dev-1",
 		SensorID:               "sensor-1",
@@ -131,7 +147,7 @@ func TestEnrichedEvent_FieldAccessorsPropagateError(t *testing.T) {
 
 func TestEnrichedEvent_PromotesEmbeddedEventAccessors(t *testing.T) {
 	ev := eventWithSensor("sensor-3")
-	ee := NewEnrichedEvent(ev, &fakeEnricher{host: &HostDetails{}})
+	ee := NewEnrichedEvent(ev, &fakeEnricher{host: &common.HostDetails{}})
 
 	if ee.EventType() != "EppDetectionSummaryEvent" {
 		t.Errorf("promoted EventType() = %q; want EppDetectionSummaryEvent", ee.EventType())
@@ -146,7 +162,7 @@ func TestEnrichedEvent_PromotesEmbeddedEventAccessors(t *testing.T) {
 
 func TestEnrichedEvent_MDMIdentifierFetchesPlatformFirst(t *testing.T) {
 	f := &fakeEnricher{
-		host: &HostDetails{Platform: "Mac"},
+		host: &common.HostDetails{Platform: "Mac"},
 		mdm:  "mdm-xyz",
 	}
 	ee := NewEnrichedEvent(eventWithSensor("sensor-4"), f)
@@ -184,5 +200,81 @@ func TestEnrichedEvent_MDMIdentifierSkippedWhenHostDetailsFails(t *testing.T) {
 	}
 	if _, mdmCalls := f.counts(); mdmCalls != 0 {
 		t.Errorf("MDMIdentifier enricher call count = %d; want 0 (skipped on host error)", mdmCalls)
+	}
+}
+
+func TestEnrichedEvent_ArcConfigFetchesPlatformFirst(t *testing.T) {
+	f := &fakeEnricher{
+		host: &common.HostDetails{Platform: "Linux"},
+		arc:  &ArcConfig{ResourceName: "arc-host", ResourceGroup: "rg"},
+	}
+	ee := NewEnrichedEvent(eventWithSensor("sensor-6"), f)
+
+	got, err := ee.ArcConfig(context.Background())
+	if err != nil {
+		t.Fatalf("ArcConfig() error: %v", err)
+	}
+	if got == nil || got.ResourceName != "arc-host" {
+		t.Fatalf("ArcConfig() = %+v; want ResourceName arc-host", got)
+	}
+	if f.lastArcPlatform != "Linux" {
+		t.Errorf("ArcConfig called with platform %q; want Linux (from HostDetails)", f.lastArcPlatform)
+	}
+	if f.lastArcSensorID != "sensor-6" {
+		t.Errorf("ArcConfig called with sensorID %q; want sensor-6", f.lastArcSensorID)
+	}
+
+	// A second call is memoized: the host lookup and the Arc lookup each run once.
+	if _, err := ee.ArcConfig(context.Background()); err != nil {
+		t.Fatalf("ArcConfig() second call error: %v", err)
+	}
+	f.mu.Lock()
+	hostCalls, arcCalls := f.hostCalls, f.arcCalls
+	f.mu.Unlock()
+	if hostCalls != 1 {
+		t.Errorf("host call count = %d; want 1 (memoized)", hostCalls)
+	}
+	if arcCalls != 1 {
+		t.Errorf("Arc call count = %d; want 1 (memoized)", arcCalls)
+	}
+}
+
+func TestEnrichedEvent_ArcConfigSkippedWhenHostDetailsFails(t *testing.T) {
+	sentinel := errors.New("host boom")
+	f := &fakeEnricher{hostErr: sentinel}
+	ee := NewEnrichedEvent(eventWithSensor("sensor-7"), f)
+
+	got, err := ee.ArcConfig(context.Background())
+	if got != nil {
+		t.Errorf("ArcConfig() = %+v; want nil on host error", got)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("ArcConfig() err = %v; want sentinel", err)
+	}
+	f.mu.Lock()
+	arcCalls := f.arcCalls
+	f.mu.Unlock()
+	if arcCalls != 0 {
+		t.Errorf("ArcConfig enricher call count = %d; want 0 (skipped on host error)", arcCalls)
+	}
+}
+
+func TestEnrichedEventHostReturnsFullDetails(t *testing.T) {
+	t.Parallel()
+	want := &common.HostDetails{
+		Known:         true,
+		MACAddress:    "aa-bb-cc",
+		ExternalIP:    "1.2.3.4",
+		InstanceID:    "i-0abc",
+		CloudProvider: "AWS",
+	}
+	ee := NewEnrichedEvent(&Event{}, &fakeEnricher{host: want})
+
+	got, err := ee.Host(context.Background())
+	if err != nil {
+		t.Fatalf("Host: %v", err)
+	}
+	if got != want {
+		t.Fatalf("Host returned %+v, want the memoized details %+v", got, want)
 	}
 }

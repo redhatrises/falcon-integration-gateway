@@ -70,10 +70,11 @@
   "workspaceone": {
     "token": "",
     "syslog_host": "",
-    "syslog_port": 6514
+    "syslog_port": 6514,
+    "tls_verify": false
   },
-  "enrich": {
-    "cache_size": 8192,
-    "cache_ttl": "1h"
+  "cache": {
+    "size": 8192,
+    "ttl": "1h"
   }
 }

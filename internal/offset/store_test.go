@@ -23,6 +23,13 @@ func storeFactories() map[string]storeFactory {
 			}
 			return s
 		},
+		"ssm": func(t *testing.T) Store {
+			s, err := newSSMStore(context.Background(), newFakeSSM(), testSSMParam)
+			if err != nil {
+				t.Fatalf("newSSMStore: %v", err)
+			}
+			return s
+		},
 	}
 }
 
@@ -140,7 +147,7 @@ func TestFileDebouncedCommitFlushedOnClose(t *testing.T) {
 		t.Fatalf("NewFile: %v", err)
 	}
 	// Two rapid commits: the first persists (lastFlush is zero), the second is
-	// debounced within flushInterval and must be flushed by Close.
+	// debounced within the flush interval and must be flushed by Close.
 	if err := s.Commit(ctx, "feed-a", 1); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}

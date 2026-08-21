@@ -22,6 +22,13 @@ var (
 	sensorRecognizedClouds = []string{"AWS", "Azure", "GCP", "unrecognized"}
 )
 
+// ValidBackendNames returns a copy of the recognized backend names. It exists so
+// a test can assert this list stays in sync with the backend registry
+// (backend.Names), which config cannot import directly without an import cycle.
+func ValidBackendNames() []string {
+	return append([]string(nil), validBackendNames...)
+}
+
 // malformedf builds a validation error carrying the standard
 // "malformed configuration: " prefix, so every site states only its specific
 // problem.
@@ -60,7 +67,7 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.validateFalcon()...)
 	errs = append(errs, c.validateEvents()...)
 	errs = append(errs, c.validateBackends()...)
-	errs = append(errs, c.validateEnrich()...)
+	errs = append(errs, c.validateCache()...)
 
 	return errors.Join(errs...)
 }
@@ -98,6 +105,18 @@ func (c *Config) validateEvents() []error {
 	// start_from_newest XOR offset != 0.
 	if c.Events.StartFromNewest && c.Events.Offset != 0 {
 		errs = append(errs, malformedf("start_from_newest and offset are mutually exclusive. When start_from_newest is true, offset must be 0 (default)"))
+	}
+
+	switch strings.ToLower(strings.TrimSpace(c.Events.DeliveryFailure)) {
+	case "", "drop", "discard", "dlq", "block":
+	default:
+		errs = append(errs, malformedf("expected delivery_failure to be one of {drop, discard, block} (dlq is a deprecated alias for drop), got %q", c.Events.DeliveryFailure))
+	}
+	if c.Events.PendingWarnThreshold < 0 {
+		errs = append(errs, malformedf("expected pending_warn_threshold to be >= 0 (0 disables), got %d", c.Events.PendingWarnThreshold))
+	}
+	if c.Events.PendingMax < 0 {
+		errs = append(errs, malformedf("expected pending_max to be >= 0 (0 disables), got %d", c.Events.PendingMax))
 	}
 
 	return errs
@@ -149,19 +168,19 @@ func (c *Config) validateBackends() []error {
 	return errs
 }
 
-// validateEnrich bounds the enrichment caches: cache_size must be a sane
-// positive capacity and cache_ttl must parse to a non-negative duration.
-func (c *Config) validateEnrich() []error {
+// validateCache bounds the enrichment caches: size must be a sane positive
+// capacity and ttl must parse to a non-negative duration.
+func (c *Config) validateCache() []error {
 	var errs []error
-	if c.Enrich.CacheSize < 1 || c.Enrich.CacheSize > 1_000_000 {
-		errs = append(errs, malformedf("expected cache_size to be in range 1-1000000"))
+	if c.Cache.Size < 1 || c.Cache.Size > 1_000_000 {
+		errs = append(errs, malformedf("expected size to be in range 1-1000000"))
 	}
-	d, err := time.ParseDuration(c.Enrich.CacheTTL)
+	d, err := time.ParseDuration(c.Cache.TTL)
 	switch {
 	case err != nil:
-		errs = append(errs, malformedf("expected cache_ttl to be a valid duration (e.g. 1h, 30m), got %q", c.Enrich.CacheTTL))
+		errs = append(errs, malformedf("expected ttl to be a valid duration (e.g. 1h, 30m), got %q", c.Cache.TTL))
 	case d < 0:
-		errs = append(errs, malformedf("expected cache_ttl to be non-negative, got %q", c.Enrich.CacheTTL))
+		errs = append(errs, malformedf("expected ttl to be non-negative, got %q", c.Cache.TTL))
 	}
 	return errs
 }

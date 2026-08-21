@@ -6,21 +6,32 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
-	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/common"
 )
 
 func TestHostDetails_CacheMiss_FetchesAndMaps(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeClient{
-		ddDevices: []*client.Device{
+		ddDevices: []*common.HostDetails{
 			{
-				DeviceID:                 "dev-1",
-				PlatformName:             "Windows",
-				InstanceID:               "i-abc123",
-				ServiceProvider:          "AWS_EC2_V2",
-				ServiceProviderAccountID: "1234567890",
+				DeviceID:               "dev-1",
+				Platform:               "Windows",
+				InstanceID:             "i-abc123",
+				CloudProvider:          "AWS_EC2_V2",
+				CloudProviderAccountID: "1234567890",
+				MACAddress:             "aa-bb-cc-dd-ee-ff",
+				ExternalIP:             "203.0.113.7",
+				LocalIP:                "10.0.0.5",
+				MachineDomain:          "corp.example.com",
+				AgentVersion:           "7.10.0",
+				LastSeen:               "2026-08-13T00:00:00Z",
+				OSVersion:              "Windows Server 2022",
+				SiteName:               "us-east",
+				OU:                     []string{"Servers", "Prod"},
+				Tags:                   []string{"role/api"},
+				ProductTypeDesc:        "Server",
+				ZoneGroup:              "us-east-1a",
 			},
 		},
 	}
@@ -54,6 +65,42 @@ func TestHostDetails_CacheMiss_FetchesAndMaps(t *testing.T) {
 	if h.DeviceID != "dev-1" {
 		t.Errorf("DeviceID = %q, want %q", h.DeviceID, "dev-1")
 	}
+	if h.MACAddress != "aa-bb-cc-dd-ee-ff" {
+		t.Errorf("MACAddress = %q, want %q", h.MACAddress, "aa-bb-cc-dd-ee-ff")
+	}
+	if h.ExternalIP != "203.0.113.7" {
+		t.Errorf("ExternalIP = %q, want %q", h.ExternalIP, "203.0.113.7")
+	}
+	if h.LocalIP != "10.0.0.5" {
+		t.Errorf("LocalIP = %q, want %q", h.LocalIP, "10.0.0.5")
+	}
+	if h.MachineDomain != "corp.example.com" {
+		t.Errorf("MachineDomain = %q, want %q", h.MachineDomain, "corp.example.com")
+	}
+	if h.AgentVersion != "7.10.0" {
+		t.Errorf("AgentVersion = %q, want %q", h.AgentVersion, "7.10.0")
+	}
+	if h.LastSeen != "2026-08-13T00:00:00Z" {
+		t.Errorf("LastSeen = %q, want %q", h.LastSeen, "2026-08-13T00:00:00Z")
+	}
+	if h.OSVersion != "Windows Server 2022" {
+		t.Errorf("OSVersion = %q, want %q", h.OSVersion, "Windows Server 2022")
+	}
+	if h.SiteName != "us-east" {
+		t.Errorf("SiteName = %q, want %q", h.SiteName, "us-east")
+	}
+	if len(h.OU) != 2 || h.OU[0] != "Servers" || h.OU[1] != "Prod" {
+		t.Errorf("OU = %v, want [Servers Prod]", h.OU)
+	}
+	if len(h.Tags) != 1 || h.Tags[0] != "role/api" {
+		t.Errorf("Tags = %v, want [role/api]", h.Tags)
+	}
+	if h.ProductTypeDesc != "Server" {
+		t.Errorf("ProductTypeDesc = %q, want %q", h.ProductTypeDesc, "Server")
+	}
+	if h.ZoneGroup != "us-east-1a" {
+		t.Errorf("ZoneGroup = %q, want %q", h.ZoneGroup, "us-east-1a")
+	}
 }
 
 func TestHostDetails_Unresolvable_ReturnsUnknown(t *testing.T) {
@@ -61,12 +108,12 @@ func TestHostDetails_Unresolvable_ReturnsUnknown(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		devices []*client.Device
+		devices []*common.HostDetails
 	}{
 		{name: "no devices", devices: nil},
 		{
 			name: "multiple devices",
-			devices: []*client.Device{
+			devices: []*common.HostDetails{
 				{DeviceID: "dev-1"},
 				{DeviceID: "dev-2"},
 			},
@@ -98,7 +145,7 @@ func TestHostDetails_CacheHit_NoRefetch(t *testing.T) {
 	t.Parallel()
 
 	fake := &fakeClient{
-		ddDevices: []*client.Device{{DeviceID: "dev-1", ServiceProvider: "AWS_EC2_V2"}},
+		ddDevices: []*common.HostDetails{{DeviceID: "dev-1", CloudProvider: "AWS_EC2_V2"}},
 	}
 	e := newTestResolver(fake)
 
@@ -161,7 +208,7 @@ func TestHostDetails_Resolved_AfterUnresolvable(t *testing.T) {
 	}
 
 	fake.mu.Lock()
-	fake.ddDevices = []*client.Device{{DeviceID: "dev-1", ServiceProvider: "AWS_EC2_V2"}}
+	fake.ddDevices = []*common.HostDetails{{DeviceID: "dev-1", CloudProvider: "AWS_EC2_V2"}}
 	fake.mu.Unlock()
 
 	second, err := e.HostDetails(context.Background(), "sensor-1")
@@ -182,7 +229,7 @@ func TestHostDetails_TransientError_RetriesThenSucceeds(t *testing.T) {
 	fake := &fakeClient{
 		ddErr:     errors.New("temporary transport failure"),
 		ddErrN:    2, // first two attempts fail, third succeeds
-		ddDevices: []*client.Device{{DeviceID: "dev-1", ServiceProvider: "AWS_EC2_V2"}},
+		ddDevices: []*common.HostDetails{{DeviceID: "dev-1", CloudProvider: "AWS_EC2_V2"}},
 	}
 	e := newTestResolver(fake) // maxTries = 3
 
@@ -233,7 +280,7 @@ func TestHostDetails_SingleflightCollapse(t *testing.T) {
 	release := make(chan struct{})
 
 	fake := &fakeClient{
-		ddDevices: []*client.Device{{DeviceID: "dev-1", ServiceProvider: "AWS_EC2_V2"}},
+		ddDevices: []*common.HostDetails{{DeviceID: "dev-1", CloudProvider: "AWS_EC2_V2"}},
 		ddHook: func() {
 			arrived <- struct{}{}
 			<-release
@@ -241,7 +288,7 @@ func TestHostDetails_SingleflightCollapse(t *testing.T) {
 	}
 	e := newTestResolver(fake)
 
-	results := make([]*events.HostDetails, n)
+	results := make([]*common.HostDetails, n)
 	errs := make([]error, n)
 	wg.Add(n)
 	for i := range n {

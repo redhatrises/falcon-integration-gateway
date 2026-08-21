@@ -6,33 +6,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
-	"time"
 )
-
-// flushInterval bounds how often dirty state is fsynced to disk. Commits that
-// arrive within this window of the previous persist are coalesced (the value
-// is kept in memory and written by the next persist or the final Close flush),
-// avoiding an fsync storm under a high-throughput stream.
-const flushInterval = time.Second
 
 // File is a durable, disk-backed Store. It persists a JSON object mapping
 // feed_id -> offset to a single file, replacing the in-memory-only offset
 // tracking in the Python daemon (fig/queue/__init__.py) so that resume offsets
 // survive a process restart.
 //
-// Writes are atomic (write to path+".tmp" then os.Rename) and debounced: a
-// Commit updates in-memory state immediately but only persists to disk at most
-// once per flushInterval, with a guaranteed final flush on Close. All state is
-// guarded by a single mutex.
+// Writes are atomic (write to path+".tmp" then os.Rename) and buffered by an
+// embedded BufferedStore: a Commit updates in-memory state immediately but only
+// persists to disk at most once per DefaultFlushInterval, with a guaranteed
+// final flush on Close.
 type File struct {
 	path string
-
-	mu        sync.Mutex
-	offsets   map[string]uint64
-	dirty     bool
-	lastFlush time.Time
-	closed    bool
+	buf  *BufferedStore
 }
 
 // NewFile constructs a File store persisting to path, creating parent
@@ -48,10 +35,7 @@ func NewFile(path string) (*File, error) {
 		}
 	}
 
-	f := &File{
-		path:    path,
-		offsets: make(map[string]uint64),
-	}
+	offsets := make(map[string]uint64)
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is operator-configured
 	switch {
@@ -61,73 +45,51 @@ func NewFile(path string) (*File, error) {
 		return nil, fmt.Errorf("offset: reading store %q: %w", path, err)
 	default:
 		if len(data) > 0 {
-			if err := json.Unmarshal(data, &f.offsets); err != nil {
+			if err := json.Unmarshal(data, &offsets); err != nil {
 				return nil, fmt.Errorf("offset: parsing store %q: %w", path, err)
 			}
 		}
 	}
 
+	f := &File{path: path}
+	f.buf = NewBufferedStore(BufferedStoreConfig{
+		Initial:  offsets,
+		Interval: DefaultFlushInterval,
+		Persist:  f.persist,
+	})
 	return f, nil
 }
 
 // Load returns the current in-memory offset for feedID (hydrated from disk on
 // construction), or 0 when absent.
 func (f *File) Load(_ context.Context, feedID string) (uint64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.offsets[feedID], nil
+	return f.buf.Load(feedID), nil
 }
 
-// Commit advances feedID's offset in memory and persists to disk if the
-// debounce window has elapsed. Otherwise the value is retained and flushed by a
-// later Commit or by Close.
+// Commit advances feedID's offset in memory and persists to disk if the flush
+// window has elapsed. Otherwise the value is retained and flushed by a later
+// Commit or by Close.
 //
 // The stored offset is monotonic: a commit at or below the current value is a
 // no-op. The watermark is a resume floor, and moving it backward would replay
 // or re-deliver events that were already handled, so a stale or out-of-order
 // commit must never regress it.
-func (f *File) Commit(_ context.Context, feedID string, offset uint64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.closed {
-		return fmt.Errorf("offset: commit on closed store")
-	}
-
-	if !applyOffset(f.offsets, feedID, offset) {
-		return nil
-	}
-	f.dirty = true
-
-	if time.Since(f.lastFlush) < flushInterval {
-		return nil
-	}
-	return f.persistLocked()
+func (f *File) Commit(ctx context.Context, feedID string, offset uint64) error {
+	return f.buf.Commit(ctx, feedID, offset)
 }
 
 // Close flushes any pending state to disk and marks the store closed. It is
 // safe to call once; subsequent Commits return an error.
-func (f *File) Close(_ context.Context) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.closed {
-		return nil
-	}
-	f.closed = true
-
-	if !f.dirty {
-		return nil
-	}
-	return f.persistLocked()
+func (f *File) Close(ctx context.Context) error {
+	return f.buf.Close(ctx)
 }
 
-// persistLocked atomically writes the current offset map to disk. The caller
-// must hold f.mu.
-func (f *File) persistLocked() error {
-	data, err := json.Marshal(f.offsets)
+// persist atomically writes offsets to disk. The BufferedStore invokes it
+// serially under its lock, so it needs no additional synchronization.
+func (f *File) persist(_ context.Context, offsets map[string]uint64) error {
+	data, err := marshalOffsets(offsets)
 	if err != nil {
-		return fmt.Errorf("offset: marshaling store: %w", err)
+		return err
 	}
 
 	tmp := f.path + ".tmp"
@@ -139,8 +101,5 @@ func (f *File) persistLocked() error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("offset: renaming temp store into place: %w", err)
 	}
-
-	f.dirty = false
-	f.lastFlush = time.Now()
 	return nil
 }

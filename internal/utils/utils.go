@@ -6,6 +6,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -31,6 +32,56 @@ func Sleep(ctx context.Context, d time.Duration) bool {
 // graceful-shutdown signal rather than a fatal fault.
 func IsCanceled(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// PollUntil calls check immediately and then every interval until it reports
+// done, honoring ctx between polls. It returns nil once check reports done, the
+// check's error if a poll fails, or ctx.Err() if ctx is cancelled or its
+// deadline passes while waiting. check is always invoked at least once, before
+// any wait, so an already-complete condition returns without sleeping. The
+// caller owns the bound: derive a deadline on ctx to cap the total wait.
+func PollUntil(ctx context.Context, interval time.Duration, check func(context.Context) (done bool, err error)) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		done, err := check(ctx)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// IntFromAny extracts an int from a JSON-decoded value, returning 0 for any
+// non-numeric value. A fractional value is truncated toward zero, whether it
+// arrives as a float64 or as a decimal-formatted json.Number (the form produced
+// when the stream is decoded with UseNumber).
+func IntFromAny(v any) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return int(i)
+		}
+		// A decimal-formatted literal (e.g. "3.0") is not a valid Int64; fall
+		// back to the float parse and truncate, matching the float64 branch.
+		if f, err := n.Float64(); err == nil {
+			return int(f)
+		}
+		return 0
+	default:
+		return 0
+	}
 }
 
 // SplitCSV splits a comma-separated string into trimmed, non-empty tokens. A

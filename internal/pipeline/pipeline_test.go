@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 
+	prommetrics "github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/crowdstrike/falcon-integration-gateway/internal/backend"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/common"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/offset"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/testutil"
 )
@@ -31,104 +36,59 @@ var errBoom = errors.New("boom")
 // exclude set or non-detection events).
 type noopEnricher struct{}
 
-func (noopEnricher) HostDetails(_ context.Context, _ string) (*events.HostDetails, error) {
-	return &events.HostDetails{}, nil
+func (noopEnricher) HostDetails(_ context.Context, _ string) (*common.HostDetails, error) {
+	return &common.HostDetails{}, nil
 }
 
 func (noopEnricher) MDMIdentifier(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
 
-// fakeEnricher resolves host details to a fixed cloud provider, or returns a
-// fixed error. A provider of "" models device-not-found (the enricher's
-// non-error empty-provider fallback); a non-nil err models a terminal or
-// context lookup failure.
-type fakeEnricher struct {
-	provider string
-	err      error
-}
-
-func (f *fakeEnricher) HostDetails(_ context.Context, _ string) (*events.HostDetails, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return &events.HostDetails{Known: f.provider != "", CloudProvider: f.provider}, nil
-}
-
-func (f *fakeEnricher) MDMIdentifier(_ context.Context, _, _ string) (string, error) {
-	return "", nil
+func (noopEnricher) ArcConfig(_ context.Context, _, _ string) (*events.ArcConfig, error) {
+	return nil, nil
 }
 
 // --- commit tracker -------------------------------------------------------
 
-// countingStore records every Commit so tests can assert the committed
-// watermark sequence.
-type countingStore struct {
-	mu       sync.Mutex
-	loadBase map[string]uint64
-	commits  map[string][]uint64
-	last     map[string]uint64
-	closed   bool
-}
-
-func newCountingStore() *countingStore {
-	return &countingStore{
-		loadBase: map[string]uint64{},
-		commits:  map[string][]uint64{},
-		last:     map[string]uint64{},
+// received records a run of offsets as received via the tracker, in the
+// ascending stream order the tracker requires (a single dispatcher goroutine
+// provides this in production).
+func received(t *testing.T, tr *commitTracker, feedID string, offs ...uint64) {
+	t.Helper()
+	for _, off := range offs {
+		if err := tr.Received(context.Background(), feedID, off); err != nil {
+			t.Fatalf("Received(%d): %v", off, err)
+		}
 	}
 }
 
-func (s *countingStore) Load(_ context.Context, feedID string) (uint64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.loadBase[feedID], nil
-}
-
-func (s *countingStore) Commit(_ context.Context, feedID string, off uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.commits[feedID] = append(s.commits[feedID], off)
-	s.last[feedID] = off
-	return nil
-}
-
-func (s *countingStore) Close(_ context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closed = true
-	return nil
-}
-
-func (s *countingStore) lastCommitted(feedID string) uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.last[feedID]
-}
-
-func TestCommitTracker_OutOfOrderAdvancesMonotonically(t *testing.T) {
-	t.Parallel()
-	store := newCountingStore()
-	tr := newCommitTracker(store, testutil.DiscardLogger())
-	ctx := context.Background()
-	const feed = "f1"
-
-	// Feed offsets out of order: 3,1,2,5,4 -> watermark must reach 5 with no
-	// gap skipped.
-	for _, off := range []uint64{3, 1, 2, 5, 4} {
-		if err := tr.Done(ctx, feed, off); err != nil {
+// done marks a run of offsets done via the tracker, in the given order.
+func done(t *testing.T, tr *commitTracker, feedID string, offs ...uint64) {
+	t.Helper()
+	for _, off := range offs {
+		if err := tr.Done(context.Background(), feedID, off); err != nil {
 			t.Fatalf("Done(%d): %v", off, err)
 		}
 	}
+}
 
-	if got := store.lastCommitted(feed); got != 5 {
+func TestCommitTracker_OutOfOrderCompletionAdvancesToReceived(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewRecordingStore()
+	tr := newCommitTracker(commitTrackerConfig{store: store, logger: testutil.DiscardLogger()})
+	const feed = "f1"
+
+	// Offsets arrive in stream order (1..5) but complete out of order. Once all
+	// are done the watermark reaches 5, and the committed sequence never
+	// regresses.
+	received(t, tr, feed, 1, 2, 3, 4, 5)
+	done(t, tr, feed, 3, 1, 2, 5, 4)
+
+	if got := store.LastCommitted(feed); got != 5 {
 		t.Fatalf("committed = %d, want 5", got)
 	}
 
-	// The committed sequence must be monotonically non-decreasing.
-	store.mu.Lock()
-	seq := store.commits[feed]
-	store.mu.Unlock()
+	seq := store.Committed(feed)
 	var prev uint64
 	for _, c := range seq {
 		if c < prev {
@@ -138,82 +98,196 @@ func TestCommitTracker_OutOfOrderAdvancesMonotonically(t *testing.T) {
 	}
 }
 
-func TestCommitTracker_MissingMiddleStallsWatermark(t *testing.T) {
+func TestCommitTracker_SkipsNeverReceivedGaps(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
-	tr := newCommitTracker(store, testutil.DiscardLogger())
-	ctx := context.Background()
+	store := testutil.NewRecordingStore()
+	tr := newCommitTracker(commitTrackerConfig{store: store, logger: testutil.DiscardLogger()})
 	const feed = "f1"
 
-	// Never Done(2): watermark must stall at 1.
-	for _, off := range []uint64{1, 3, 4, 5} {
-		if err := tr.Done(ctx, feed, off); err != nil {
-			t.Fatalf("Done(%d): %v", off, err)
-		}
+	// Offset 2 is never received: a server-side eventType filter dropped it from
+	// this feed, so its offset never arrives. The watermark must advance across
+	// the gap to 5 rather than stalling — the core of the ordered-gap-aware fix.
+	received(t, tr, feed, 1, 3, 4, 5)
+	done(t, tr, feed, 1, 3, 4, 5)
+
+	if got := store.LastCommitted(feed); got != 5 {
+		t.Fatalf("committed = %d, want 5 (offset 2 was a filter gap, skipped)", got)
+	}
+}
+
+func TestCommitTracker_InFlightOffsetHoldsWatermark(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewRecordingStore()
+	tr := newCommitTracker(commitTrackerConfig{store: store, logger: testutil.DiscardLogger()})
+	const feed = "f1"
+
+	// All of 1..5 are received, but offset 2 is still in flight (received, not
+	// done). The watermark can advance only to 1 — it must never pass a
+	// received-but-unfinished offset, or that event would be lost on a crash.
+	received(t, tr, feed, 1, 2, 3, 4, 5)
+	done(t, tr, feed, 1, 3, 4, 5) // 2 withheld
+
+	if got := store.LastCommitted(feed); got != 1 {
+		t.Fatalf("committed = %d, want 1 (held by in-flight offset 2)", got)
 	}
 
-	if got := store.lastCommitted(feed); got != 1 {
-		t.Fatalf("committed = %d, want 1 (stalled on missing offset 2)", got)
-	}
-
-	// Delivering the missing offset unblocks the full contiguous run to 5.
-	if err := tr.Done(ctx, feed, 2); err != nil {
-		t.Fatalf("Done(2): %v", err)
-	}
-	if got := store.lastCommitted(feed); got != 5 {
-		t.Fatalf("committed = %d, want 5 after gap filled", got)
+	// Completing 2 releases the watermark through the rest of the received run.
+	done(t, tr, feed, 2)
+	if got := store.LastCommitted(feed); got != 5 {
+		t.Fatalf("committed = %d, want 5 after in-flight offset cleared", got)
 	}
 }
 
 func TestCommitTracker_SeedsFromStoreAndIgnoresReplays(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
-	store.loadBase["f1"] = 10
-	tr := newCommitTracker(store, testutil.DiscardLogger())
-	ctx := context.Background()
+	store := testutil.NewRecordingStore()
+	store.LoadBase["f1"] = 10
+	tr := newCommitTracker(commitTrackerConfig{store: store, logger: testutil.DiscardLogger()})
+	const feed = "f1"
 
-	// Offsets at or below the loaded watermark are ignored (at-least-once
-	// re-delivery after restart) and must not commit or move backwards.
-	for _, off := range []uint64{5, 9, 10} {
-		if err := tr.Done(ctx, "f1", off); err != nil {
-			t.Fatalf("Done(%d): %v", off, err)
-		}
-	}
-	if got := store.lastCommitted("f1"); got != 0 {
+	// Offsets at or below the loaded watermark are re-deliveries after a restart:
+	// received but never tracked in flight, so they must not commit or move the
+	// watermark backwards.
+	received(t, tr, feed, 5, 9, 10)
+	done(t, tr, feed, 5, 9, 10)
+	if got := store.LastCommitted(feed); got != 0 {
 		t.Fatalf("unexpected commit %d for replayed offsets", got)
 	}
 
-	// The next contiguous offset after the seed advances.
-	if err := tr.Done(ctx, "f1", 11); err != nil {
-		t.Fatalf("Done(11): %v", err)
-	}
-	if got := store.lastCommitted("f1"); got != 11 {
+	// The next offset after the seed advances.
+	received(t, tr, feed, 11)
+	done(t, tr, feed, 11)
+	if got := store.LastCommitted(feed); got != 11 {
 		t.Fatalf("committed = %d, want 11", got)
 	}
 }
 
 func TestCommitTracker_PerFeedIsolation(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
-	tr := newCommitTracker(store, testutil.DiscardLogger())
-	ctx := context.Background()
+	store := testutil.NewRecordingStore()
+	tr := newCommitTracker(commitTrackerConfig{store: store, logger: testutil.DiscardLogger()})
 
-	if err := tr.Done(ctx, "a", 1); err != nil {
-		t.Fatal(err)
-	}
-	if err := tr.Done(ctx, "b", 1); err != nil {
-		t.Fatal(err)
-	}
-	// b stalls at 1 (no 2); a advances to 2.
-	if err := tr.Done(ctx, "a", 2); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.lastCommitted("a"); got != 2 {
+	received(t, tr, "a", 1, 2)
+	received(t, tr, "b", 1)
+	done(t, tr, "a", 1)
+	done(t, tr, "b", 1)
+	// b has received only offset 1 (committed 1); a advances to 2 independently.
+	done(t, tr, "a", 2)
+
+	if got := store.LastCommitted("a"); got != 2 {
 		t.Fatalf("feed a committed = %d, want 2", got)
 	}
-	if got := store.lastCommitted("b"); got != 1 {
+	if got := store.LastCommitted("b"); got != 1 {
 		t.Fatalf("feed b committed = %d, want 1", got)
 	}
+}
+
+// TestCommitTracker_PendingCap verifies pendingMax is an observability bound: an
+// in-flight set larger than the cap increments fig_pending_overflow_total, but
+// the offsets are still tracked (never silently dropped) so no event is lost —
+// the operator must restart to drain a stuck block-policy backlog.
+func TestCommitTracker_PendingCap(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewRecordingStore()
+	const feed = "cap-feed"
+	tr := newCommitTracker(commitTrackerConfig{
+		store:      store,
+		logger:     testutil.DiscardLogger(),
+		pendingMax: 2,
+	})
+
+	before := prommetrics.ToFloat64(metrics.PendingOverflow.WithLabelValues(feed))
+
+	// Offsets 1..4 are received but none complete, so all four stay in flight.
+	// The set exceeds the cap of 2 as 3 and 4 are added -> two overflow events.
+	received(t, tr, feed, 1, 2, 3, 4)
+	if got := store.LastCommitted(feed); got != 0 {
+		t.Fatalf("committed = %d, want 0 (nothing done yet)", got)
+	}
+	if got := prommetrics.ToFloat64(metrics.PendingOverflow.WithLabelValues(feed)) - before; got != 2 {
+		t.Fatalf("overflow delta = %v, want 2 (offsets 3 and 4 exceeded the cap)", got)
+	}
+
+	// The offsets were tracked despite the cap: completing them advances the
+	// watermark through the whole run to 4, proving nothing was dropped.
+	done(t, tr, feed, 1, 2, 3, 4)
+	if got := store.LastCommitted(feed); got != 4 {
+		t.Fatalf("committed = %d, want 4 (cap is observability-only, no drop)", got)
+	}
+}
+
+// TestCommitTracker_FreshStartAdvancesToFirstOffset covers the fresh-tenant
+// start_from_newest case: the stream connects at whence=2 and the first event
+// arrives at a high offset (e.g. 5001, not 1). The ordered-gap-aware watermark
+// treats every lower offset as never-received and advances straight to the first
+// received offset — with or without a seeded store — so there is no stall.
+//
+// The store seed still matters for a different window (a reconnect before the
+// first event is committed falls back to the stored offset rather than
+// whence=2), which the stream tests cover (TestConnection_SeedsFloorBeforeFirstEmit,
+// TestSeedFloorFunc_SeedsOnceThenGuards); it is no longer needed to keep the
+// tracker itself from stalling.
+func TestCommitTracker_FreshStartAdvancesToFirstOffset(t *testing.T) {
+	t.Parallel()
+
+	const feed = "f1"
+	const firstOffset uint64 = 5001
+
+	tests := []struct {
+		name     string
+		loadBase uint64 // store.Load result; 0 models an unseeded fresh start
+	}{
+		{name: "unseeded fresh start", loadBase: 0},
+		{name: "seam seeds firstOffset-1", loadBase: firstOffset - 1},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			store := testutil.NewRecordingStore()
+			if tc.loadBase != 0 {
+				store.LoadBase[feed] = tc.loadBase
+			}
+			tr := newCommitTracker(commitTrackerConfig{store: store, logger: testutil.DiscardLogger()})
+
+			received(t, tr, feed, firstOffset)
+			done(t, tr, feed, firstOffset)
+
+			if got := store.LastCommitted(feed); got != firstOffset {
+				t.Fatalf("committed = %d, want %d", got, firstOffset)
+			}
+		})
+	}
+}
+
+// BenchmarkCommitTrackerDone measures the received-then-done path under maximal
+// worker contention: all GOMAXPROCS goroutines hammer a single feed, each with a
+// unique offset, so the mutex is never uncontended. It is the evidence for
+// whether calling store.Commit while holding commitTracker.mu is a real
+// bottleneck. The Memory store's Commit is the common case (a single map write;
+// the durable stores debounce to that in steady state), so this isolates the
+// lock cost rather than store I/O. If the per-op cost here is negligible the
+// lock stays as-is; per-feed locks or committing outside the lock would only pay
+// off if this showed real contention.
+func BenchmarkCommitTrackerDone(b *testing.B) {
+	const feed = "bench"
+	tr := newCommitTracker(commitTrackerConfig{store: offset.NewMemory(), logger: testutil.DiscardLogger()})
+	ctx := context.Background()
+
+	var next atomic.Uint64
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			off := next.Add(1)
+			if err := tr.Received(ctx, feed, off); err != nil {
+				b.Fatalf("Received(%d): %v", off, err)
+			}
+			if err := tr.Done(ctx, feed, off); err != nil {
+				b.Fatalf("Done(%d): %v", off, err)
+			}
+		}
+	})
 }
 
 // --- gates ----------------------------------------------------------------
@@ -303,49 +377,49 @@ func TestCloudDetectionRelevant(t *testing.T) {
 			name:          "non-detection event is always relevant, no enrichment",
 			excludeClouds: map[string]bool{"AWS": true},
 			eventType:     "AuthActivityAuditEvent",
-			enricher:      &fakeEnricher{err: errBoom}, // must not be consulted
+			enricher:      &testutil.FakeEnricher{HostErr: errBoom}, // must not be consulted
 			wantRelevant:  true,
 		},
 		{
 			name:          "detection with empty exclude set is relevant, no enrichment",
 			excludeClouds: map[string]bool{},
 			eventType:     eppDetectionEventType,
-			enricher:      &fakeEnricher{err: errBoom}, // must not be consulted
+			enricher:      &testutil.FakeEnricher{HostErr: errBoom}, // must not be consulted
 			wantRelevant:  true,
 		},
 		{
 			name:          "detection on excluded provider is dropped",
 			excludeClouds: map[string]bool{"AWS": true},
 			eventType:     eppDetectionEventType,
-			enricher:      &fakeEnricher{provider: "AWS"},
+			enricher:      &testutil.FakeEnricher{Host: &common.HostDetails{Known: true, CloudProvider: "AWS"}},
 			wantRelevant:  false,
 		},
 		{
 			name:          "detection on non-excluded provider passes",
 			excludeClouds: map[string]bool{"AWS": true},
 			eventType:     eppDetectionEventType,
-			enricher:      &fakeEnricher{provider: "Azure"},
+			enricher:      &testutil.FakeEnricher{Host: &common.HostDetails{Known: true, CloudProvider: "Azure"}},
 			wantRelevant:  true,
 		},
 		{
 			name:          "unknown device with unrecognized excluded is dropped",
 			excludeClouds: map[string]bool{"unrecognized": true},
 			eventType:     eppDetectionEventType,
-			enricher:      &fakeEnricher{provider: ""},
+			enricher:      &testutil.FakeEnricher{Host: &common.HostDetails{}},
 			wantRelevant:  false,
 		},
 		{
 			name:          "unknown device without unrecognized excluded passes",
 			excludeClouds: map[string]bool{"AWS": true},
 			eventType:     eppDetectionEventType,
-			enricher:      &fakeEnricher{provider: ""},
+			enricher:      &testutil.FakeEnricher{Host: &common.HostDetails{}},
 			wantRelevant:  true,
 		},
 		{
 			name:          "terminal enrichment error surfaces",
 			excludeClouds: map[string]bool{"AWS": true},
 			eventType:     eppDetectionEventType,
-			enricher:      &fakeEnricher{err: errBoom},
+			enricher:      &testutil.FakeEnricher{HostErr: errBoom},
 			wantRelevant:  false,
 			wantErr:       errBoom,
 		},
@@ -373,7 +447,7 @@ func newTestPipeline(t *testing.T, workers int, policy string, backends []backen
 	cfg := &config.Config{}
 	cfg.Gateway.WorkerThreads = workers
 	cfg.Events.DeliveryFailure = policy
-	p, err := New(cfg, backends, noopEnricher{}, store, testutil.DiscardLogger())
+	p, err := New(Params{Config: cfg, Backends: backends, Enricher: noopEnricher{}, Store: store, Logger: testutil.DiscardLogger()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -394,7 +468,7 @@ func feed(t *testing.T, evs ...*events.Event) <-chan *events.Event {
 func TestPipeline_DispatchAllSucceed(t *testing.T) {
 	t.Parallel()
 	b := newFakeBackend("GENERIC", backend.AllEventTypes)
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 4, "dlq", []backend.Backend{b}, store)
 
 	in := feed(t,
@@ -406,13 +480,13 @@ func TestPipeline_DispatchAllSucceed(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	if got := store.lastCommitted("f"); got != 3 {
+	if got := store.LastCommitted("f"); got != 3 {
 		t.Fatalf("committed = %d, want 3", got)
 	}
 	if len(b.processedOffsets()) != 3 {
 		t.Fatalf("processed %d events, want 3", len(b.processedOffsets()))
 	}
-	if !store.closed {
+	if !store.Closed() {
 		t.Fatal("store not closed on Run completion")
 	}
 }
@@ -422,14 +496,14 @@ func TestPipeline_EventPassingNoBackendIsHandled(t *testing.T) {
 	// Backend only wants a type the events don't have -> zero dispatched, but
 	// the watermark must still advance (trivially handled).
 	b := newFakeBackend("B", []string{"OtherType"})
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"), mustEvent(t, 2, "T"))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := store.lastCommitted("f"); got != 2 {
+	if got := store.LastCommitted("f"); got != 2 {
 		t.Fatalf("committed = %d, want 2", got)
 	}
 	if len(b.processedOffsets()) != 0 {
@@ -441,7 +515,7 @@ func TestPipeline_DLQAdvancesWatermarkOnFailure(t *testing.T) {
 	t.Parallel()
 	b := newFakeBackend("B", backend.AllEventTypes)
 	b.failN = maxDeliveryAttempts + 1 // always fail
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"), mustEvent(t, 2, "T"))
@@ -449,7 +523,7 @@ func TestPipeline_DLQAdvancesWatermarkOnFailure(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// DLQ treats failures as handled -> watermark advances to 2.
-	if got := store.lastCommitted("f"); got != 2 {
+	if got := store.LastCommitted("f"); got != 2 {
 		t.Fatalf("committed = %d, want 2 (dlq acks failures)", got)
 	}
 }
@@ -460,14 +534,14 @@ func TestPipeline_BlockStallsWatermarkOnFailure(t *testing.T) {
 	// done, so the watermark must never advance (stays 0) even though 2
 	// completes out of order.
 	b := &conditionalBackend{failOffsets: map[uint64]bool{1: true}}
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 4, "block", []backend.Backend{b}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"), mustEvent(t, 2, "T"))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := store.lastCommitted("f"); got != 0 {
+	if got := store.LastCommitted("f"); got != 0 {
 		t.Fatalf("committed = %d, want 0 (blocked on failed offset 1)", got)
 	}
 }
@@ -490,18 +564,89 @@ func (c *conditionalBackend) Process(_ context.Context, ev *events.EnrichedEvent
 	return nil
 }
 
+// droppingBackend returns a backend.DropError for every event, counting Process
+// calls so a test can assert a deliberate drop is not retried.
+type droppingBackend struct {
+	reason string
+
+	mu    sync.Mutex
+	calls int
+}
+
+func (d *droppingBackend) Name() string                 { return "DROP" }
+func (d *droppingBackend) RelevantEventTypes() []string { return backend.AllEventTypes }
+func (d *droppingBackend) IsRelevant(_ context.Context, _ *events.EnrichedEvent) bool {
+	return true
+}
+
+func (d *droppingBackend) Process(_ context.Context, _ *events.EnrichedEvent) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	return backend.Dropped(d.reason)
+}
+
+func (d *droppingBackend) processCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
+}
+
+// TestPipeline_BackendDropIsRecordedNotDelivered pins the DropError contract: a
+// deliberate drop is handled (watermark advances) but counted under
+// fig_events_dropped_total rather than as a delivery, and it is never retried.
+//
+// This test is deliberately not parallel: it asserts before/after deltas on the
+// process-global EventsDelivered counter, which concurrently running tests would
+// perturb.
+func TestPipeline_BackendDropIsRecordedNotDelivered(t *testing.T) {
+	const reason = "unit_test_reason"
+	b := &droppingBackend{reason: reason}
+	store := testutil.NewRecordingStore()
+	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
+
+	deliveredBefore := prommetrics.ToFloat64(metrics.EventsDelivered)
+	failedBefore := prommetrics.ToFloat64(metrics.EventsFailed)
+	droppedBefore := prommetrics.ToFloat64(metrics.EventsDropped.WithLabelValues("DROP", reason))
+
+	in := feed(t, mustEvent(t, 1, "T"))
+	if err := p.Run(context.Background(), in); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// A deliberate drop is handled: the watermark advances.
+	if got := store.LastCommitted("f"); got != 1 {
+		t.Fatalf("committed = %d, want 1 (drop is handled)", got)
+	}
+	// A drop is not retried: Process is called exactly once.
+	if got := b.processCalls(); got != 1 {
+		t.Fatalf("Process calls = %d, want 1 (drop must not retry)", got)
+	}
+	// The drop is counted under fig_events_dropped_total{backend,reason}.
+	if got := prommetrics.ToFloat64(metrics.EventsDropped.WithLabelValues("DROP", reason)) - droppedBefore; got != 1 {
+		t.Fatalf("EventsDropped delta = %v, want 1", got)
+	}
+	// It is not counted as a delivery or a failure.
+	if got := prommetrics.ToFloat64(metrics.EventsDelivered) - deliveredBefore; got != 0 {
+		t.Fatalf("EventsDelivered delta = %v, want 0 (drop is not a delivery)", got)
+	}
+	if got := prommetrics.ToFloat64(metrics.EventsFailed) - failedBefore; got != 0 {
+		t.Fatalf("EventsFailed delta = %v, want 0 (drop is not a failure)", got)
+	}
+}
+
 func TestPipeline_RetrySucceedsWithinBudget(t *testing.T) {
 	t.Parallel()
 	b := newFakeBackend("B", backend.AllEventTypes)
 	b.failN = maxDeliveryAttempts - 1 // fail then succeed on the last attempt
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := store.lastCommitted("f"); got != 1 {
+	if got := store.LastCommitted("f"); got != 1 {
 		t.Fatalf("committed = %d, want 1", got)
 	}
 	if len(b.processedOffsets()) != 1 {
@@ -513,7 +658,7 @@ func TestPipeline_MultipleBackendsAllMustSucceed(t *testing.T) {
 	t.Parallel()
 	ok := newFakeBackend("OK", backend.AllEventTypes)
 	bad := &conditionalBackend{failOffsets: map[uint64]bool{1: true}}
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	// block policy so a failure on one dispatched-to backend holds the offset.
 	p := newTestPipeline(t, 1, "block", []backend.Backend{ok, bad}, store)
 
@@ -522,14 +667,14 @@ func TestPipeline_MultipleBackendsAllMustSucceed(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// One backend failed under block -> offset held.
-	if got := store.lastCommitted("f"); got != 0 {
+	if got := store.LastCommitted("f"); got != 0 {
 		t.Fatalf("committed = %d, want 0 (one backend failed)", got)
 	}
 }
 
 func TestPipeline_PanicInBackendIsContained(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{&panicBackend{}}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"), mustEvent(t, 2, "T"))
@@ -539,14 +684,14 @@ func TestPipeline_PanicInBackendIsContained(t *testing.T) {
 	}
 	// Under DLQ, a panicked event is dead-lettered and its watermark advances,
 	// so one poison event cannot wedge the feed's resume offset forever.
-	if got := store.lastCommitted("f"); got != 2 {
+	if got := store.LastCommitted("f"); got != 2 {
 		t.Fatalf("committed = %d, want 2 (panicked events dead-lettered under dlq)", got)
 	}
 }
 
 func TestPipeline_PanicUnderBlockPolicyStallsWatermark(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "block", []backend.Backend{&panicBackend{}}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"), mustEvent(t, 2, "T"))
@@ -555,7 +700,7 @@ func TestPipeline_PanicUnderBlockPolicyStallsWatermark(t *testing.T) {
 	}
 	// Under block, a panicked event holds the watermark (strict/compliance mode),
 	// matching a non-panicking block-policy delivery failure.
-	if got := store.lastCommitted("f"); got != 0 {
+	if got := store.LastCommitted("f"); got != 0 {
 		t.Fatalf("committed = %d, want 0 (panic holds watermark under block)", got)
 	}
 }
@@ -573,7 +718,7 @@ func TestPipeline_IsRelevantFalseSkipsBackend(t *testing.T) {
 	t.Parallel()
 	b := newFakeBackend("B", backend.AllEventTypes)
 	b.relevant = false
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
 
 	in := feed(t, mustEvent(t, 1, "T"))
@@ -581,7 +726,7 @@ func TestPipeline_IsRelevantFalseSkipsBackend(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// Not relevant -> zero dispatched -> trivially handled, watermark advances.
-	if got := store.lastCommitted("f"); got != 1 {
+	if got := store.LastCommitted("f"); got != 1 {
 		t.Fatalf("committed = %d, want 1", got)
 	}
 	if len(b.processedOffsets()) != 0 {
@@ -601,7 +746,7 @@ func newGate2Pipeline(t *testing.T, policy string, excludeClouds []string, enric
 	cfg.Gateway.WorkerThreads = 1
 	cfg.Events.DeliveryFailure = policy
 	cfg.DetectionsExcludeClouds = excludeClouds
-	p, err := New(cfg, []backend.Backend{b}, enricher, store, testutil.DiscardLogger())
+	p, err := New(Params{Config: cfg, Backends: []backend.Backend{b}, Enricher: enricher, Store: store, Logger: testutil.DiscardLogger()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -611,15 +756,15 @@ func newGate2Pipeline(t *testing.T, policy string, excludeClouds []string, enric
 
 func TestPipeline_Gate2DropsExcludedProvider(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
-	p, b := newGate2Pipeline(t, "dlq", []string{"AWS"}, &fakeEnricher{provider: "AWS"}, store)
+	store := testutil.NewRecordingStore()
+	p, b := newGate2Pipeline(t, "dlq", []string{"AWS"}, &testutil.FakeEnricher{Host: &common.HostDetails{Known: true, CloudProvider: "AWS"}}, store)
 
 	in := feed(t, mustEvent(t, 1, eppDetectionEventType))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// Excluded provider -> gate drops it -> zero dispatched, watermark advances.
-	if got := store.lastCommitted("f"); got != 1 {
+	if got := store.LastCommitted("f"); got != 1 {
 		t.Fatalf("committed = %d, want 1", got)
 	}
 	if len(b.processedOffsets()) != 0 {
@@ -629,15 +774,15 @@ func TestPipeline_Gate2DropsExcludedProvider(t *testing.T) {
 
 func TestPipeline_Gate2UnrecognizedBucketHonored(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	// Unknown device (empty provider) with "unrecognized" excluded -> dropped.
-	p, b := newGate2Pipeline(t, "dlq", []string{"unrecognized"}, &fakeEnricher{provider: ""}, store)
+	p, b := newGate2Pipeline(t, "dlq", []string{"unrecognized"}, &testutil.FakeEnricher{Host: &common.HostDetails{}}, store)
 
 	in := feed(t, mustEvent(t, 1, eppDetectionEventType))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := store.lastCommitted("f"); got != 1 {
+	if got := store.LastCommitted("f"); got != 1 {
 		t.Fatalf("committed = %d, want 1", got)
 	}
 	if len(b.processedOffsets()) != 0 {
@@ -647,15 +792,15 @@ func TestPipeline_Gate2UnrecognizedBucketHonored(t *testing.T) {
 
 func TestPipeline_Gate2TerminalErrorDLQAdvancesWatermark(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
-	p, b := newGate2Pipeline(t, "dlq", []string{"AWS"}, &fakeEnricher{err: errBoom}, store)
+	store := testutil.NewRecordingStore()
+	p, b := newGate2Pipeline(t, "dlq", []string{"AWS"}, &testutil.FakeEnricher{HostErr: errBoom}, store)
 
 	in := feed(t, mustEvent(t, 1, eppDetectionEventType))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// Terminal enrichment error under DLQ dead-letters -> watermark advances.
-	if got := store.lastCommitted("f"); got != 1 {
+	if got := store.LastCommitted("f"); got != 1 {
 		t.Fatalf("committed = %d, want 1 (dlq acks enrichment failure)", got)
 	}
 	if len(b.processedOffsets()) != 0 {
@@ -665,31 +810,31 @@ func TestPipeline_Gate2TerminalErrorDLQAdvancesWatermark(t *testing.T) {
 
 func TestPipeline_Gate2TerminalErrorBlockStallsWatermark(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
-	p, _ := newGate2Pipeline(t, "block", []string{"AWS"}, &fakeEnricher{err: errBoom}, store)
+	store := testutil.NewRecordingStore()
+	p, _ := newGate2Pipeline(t, "block", []string{"AWS"}, &testutil.FakeEnricher{HostErr: errBoom}, store)
 
 	in := feed(t, mustEvent(t, 1, eppDetectionEventType))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// Terminal enrichment error under block holds the watermark.
-	if got := store.lastCommitted("f"); got != 0 {
+	if got := store.LastCommitted("f"); got != 0 {
 		t.Fatalf("committed = %d, want 0 (block holds on enrichment failure)", got)
 	}
 }
 
 func TestPipeline_Gate2ContextCancelHoldsWatermark(t *testing.T) {
 	t.Parallel()
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	// A context error is shutdown, not a data failure: even under DLQ the event
 	// must be held (not dead-lettered), so the watermark does not advance.
-	p, _ := newGate2Pipeline(t, "dlq", []string{"AWS"}, &fakeEnricher{err: context.Canceled}, store)
+	p, _ := newGate2Pipeline(t, "dlq", []string{"AWS"}, &testutil.FakeEnricher{HostErr: context.Canceled}, store)
 
 	in := feed(t, mustEvent(t, 1, eppDetectionEventType))
 	if err := p.Run(context.Background(), in); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := store.lastCommitted("f"); got != 0 {
+	if got := store.LastCommitted("f"); got != 0 {
 		t.Fatalf("committed = %d, want 0 (ctx-cancel holds, never dead-letters)", got)
 	}
 }
@@ -712,7 +857,7 @@ func filterEvent(t *testing.T, feedID string, off uint64, severityName string, c
 func TestPipeline_SeverityFilterAdvancesWatermarkWithoutDispatch(t *testing.T) {
 	t.Parallel()
 	b := newFakeBackend("B", backend.AllEventTypes)
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
 	// Drop anything below High (4).
 	p.sevThreshold = 4
@@ -727,7 +872,7 @@ func TestPipeline_SeverityFilterAdvancesWatermarkWithoutDispatch(t *testing.T) {
 	}
 	// Filtered offset 1 is still marked done, so the watermark advances past it
 	// and reaches 2.
-	if got := store.lastCommitted("f"); got != 2 {
+	if got := store.LastCommitted("f"); got != 2 {
 		t.Fatalf("committed = %d, want 2", got)
 	}
 	// Only the High event reached the backend.
@@ -739,7 +884,7 @@ func TestPipeline_SeverityFilterAdvancesWatermarkWithoutDispatch(t *testing.T) {
 func TestPipeline_ZeroThresholdsDisableFilter(t *testing.T) {
 	t.Parallel()
 	b := newFakeBackend("B", backend.AllEventTypes)
-	store := newCountingStore()
+	store := testutil.NewRecordingStore()
 	p := newTestPipeline(t, 1, "dlq", []backend.Backend{b}, store)
 	// Default thresholds (0/0): nothing is filtered even for an Informational,
 	// long-past event.
@@ -759,7 +904,7 @@ func TestNew_Validation(t *testing.T) {
 	base := func() *config.Config {
 		c := &config.Config{}
 		c.Gateway.WorkerThreads = 4
-		c.Events.DeliveryFailure = "dlq"
+		c.Events.DeliveryFailure = "drop"
 		return c
 	}
 	tests := []struct {
@@ -774,14 +919,14 @@ func TestNew_Validation(t *testing.T) {
 		{"bad policy", func(c *config.Config) { c.Events.DeliveryFailure = "nope" }, offset.NewMemory(), testutil.DiscardLogger(), true},
 		{"nil store", func(*config.Config) {}, nil, testutil.DiscardLogger(), true},
 		{"nil logger", func(*config.Config) {}, offset.NewMemory(), nil, true},
-		{"empty policy defaults dlq", func(c *config.Config) { c.Events.DeliveryFailure = "" }, offset.NewMemory(), testutil.DiscardLogger(), false},
+		{"empty policy defaults drop", func(c *config.Config) { c.Events.DeliveryFailure = "" }, offset.NewMemory(), testutil.DiscardLogger(), false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := base()
 			tc.mutate(cfg)
-			_, err := New(cfg, nil, noopEnricher{}, tc.store, tc.logger)
+			_, err := New(Params{Config: cfg, Enricher: noopEnricher{}, Store: tc.store, Logger: tc.logger})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("New err = %v, wantErr %v", err, tc.wantErr)
 			}
@@ -789,9 +934,39 @@ func TestNew_Validation(t *testing.T) {
 	}
 }
 
+func TestParseDeliveryPolicy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		raw     string
+		want    deliveryPolicy
+		wantErr bool
+	}{
+		{"empty defaults drop", "", policyDrop, false},
+		{"drop", "drop", policyDrop, false},
+		{"discard", "discard", policyDrop, false},
+		{"dlq deprecated alias", "dlq", policyDrop, false},
+		{"block", "block", policyBlock, false},
+		{"case-insensitive and trimmed", "  BLOCK  ", policyBlock, false},
+		{"invalid", "nope", 0, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseDeliveryPolicy(tc.raw)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseDeliveryPolicy(%q) err = %v, wantErr %v", tc.raw, err, tc.wantErr)
+			}
+			if err == nil && got != tc.want {
+				t.Fatalf("parseDeliveryPolicy(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNew_NilConfig(t *testing.T) {
 	t.Parallel()
-	if _, err := New(nil, nil, noopEnricher{}, offset.NewMemory(), testutil.DiscardLogger()); err == nil {
+	if _, err := New(Params{Config: nil, Enricher: noopEnricher{}, Store: offset.NewMemory(), Logger: testutil.DiscardLogger()}); err == nil {
 		t.Fatal("expected error for nil config")
 	}
 }
@@ -800,8 +975,8 @@ func TestNew_NilEnricher(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{}
 	cfg.Gateway.WorkerThreads = 4
-	cfg.Events.DeliveryFailure = "dlq"
-	if _, err := New(cfg, nil, nil, offset.NewMemory(), testutil.DiscardLogger()); err == nil {
+	cfg.Events.DeliveryFailure = "drop"
+	if _, err := New(Params{Config: cfg, Enricher: nil, Store: offset.NewMemory(), Logger: testutil.DiscardLogger()}); err == nil {
 		t.Fatal("expected error for nil enricher")
 	}
 }
