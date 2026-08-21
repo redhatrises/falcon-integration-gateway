@@ -1,6 +1,6 @@
 # Falcon Integration Gateway for Azure Log Analytics - Deployment Guide to AKS
 
-This guide works through deployment of Falcon Integration Gateway for Azure Log Analytics to AKS. Only the Azure [backend](https://github.com/CrowdStrike/falcon-integration-gateway/tree/main/fig/backends) will be enabled by this guide.
+This guide works through deployment of Falcon Integration Gateway for Azure Log Analytics to AKS. Only the Azure [backend](https://github.com/CrowdStrike/falcon-integration-gateway/tree/main/internal/backend) will be enabled by this guide.
 
 ### Prerequisites:
 

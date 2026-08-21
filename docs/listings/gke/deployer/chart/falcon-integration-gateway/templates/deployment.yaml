@@ -36,7 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           volumeMounts:
             - name: config-volume
-              mountPath: /fig/config/config.ini
+              mountPath: /etc/fig/config.ini
               subPath: config.ini
             - name: google-application-credentials
               mountPath: /google-application-credentials.json
@@ -60,7 +60,7 @@ spec:
             - "bash"
           args:
             - "-c"
-            - '[ "$FALCON_CLIENT_ID" == "MARKETPLACE_TEST" ] && tail -f /dev/null; python3 -m fig'
+            - '[ "$FALCON_CLIENT_ID" == "MARKETPLACE_TEST" ] && tail -f /dev/null; /fig'
       volumes:
         - name: config-volume
           configMap:

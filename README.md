@@ -120,7 +120,9 @@ Configuration is layered and resolved once at startup, from lowest to highest pr
 1. **Built-in defaults** (compiled into the binary — no file required)
 2. **An optional config file** (`config.ini`) found on the search path or supplied with `--config`
 3. **Environment variables**
-4. **Credential store** (overrides `falcon.client_id` / `falcon.client_secret`)
+4. **CLI flags** (highest precedence)
+
+In addition, a configured **credential store** (`ssm` or `secrets_manager`) overrides `falcon.client_id` / `falcon.client_secret` after the layers above are resolved.
 
 Running with no config file at all is valid — pure defaults plus environment variables. The config file may be INI, JSON, TOML, or YAML; the file extension selects the format.
 

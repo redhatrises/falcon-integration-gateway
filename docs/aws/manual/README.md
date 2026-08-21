@@ -1,7 +1,8 @@
 # AWS Security Hub Manual Deployment Guide
 
 This guide will walk you through the steps to manually deploy the Falcon Integration Gateway on
-an AWS EC2 instance as a Python application.
+an AWS EC2 instance. FIG is a single, statically linked Go binary (`fig`), distributed as a
+prebuilt binary and as a container image — there is no language runtime to install.
 
 ## Table of Contents
 
@@ -128,49 +129,100 @@ Connect to your EC2 instance via SSH and follow the steps below to install the F
 
 | Method | Pros | Cons | Best For |
 |--------|------|------|----------|
-| Python Package | • Simple installation<br>• Automatic updates<br>• Dependency management | • Less customization | Most users |
-| Git Repository | • Full source access<br>• Maximum customization<br>• Development features | • Manual updates<br>• Manual dependency management | Developers |
+| Container (Docker/Podman) | • No toolchain required<br>• Pinned, reproducible image<br>• Simple updates (`docker pull`) | • Requires a container runtime | Most users |
+| From Source / `go install` | • Full source access<br>• Build a native binary | • Requires a Go 1.26+ toolchain<br>• Manual updates | Developers |
 
 #### Choose Your Installation Method
 
-<details><summary>Python Package (<strong>Recommended</strong>)</summary>
+<details><summary>Container (<strong>Recommended</strong>)</summary>
 
-#### 4.1 Ensure the following packages are installed
+#### 4.1 Install a container runtime
 
-- Python 3.6 <= 3.11
-- pip
+Install Docker (or Podman) using the package manager for your distro. On Amazon Linux 2023:
 
 ```bash
-sudo dnf install python3 python3-pip python3-devel
+sudo dnf install -y docker
+sudo systemctl enable --now docker
 ```
 
-> Use the package manager for your distro to ensure these packages are installed.
+#### 4.2 Pull the FIG image
+
+```bash
+docker pull quay.io/crowdstrike/falcon-integration-gateway:latest
+```
+
+#### 4.3 Configure and run the FIG
+
+Provide configuration as environment variables (recommended for containers), or mount a config
+file at `/etc/fig/config.ini`. Refer to the
+[configuration options](../../../config/config.ini) available to the application and backend.
+
+> [!NOTE]
+> Instance existence confirmation can be disabled using the `confirm_instance` option in the
+> `[aws]` section of `config.ini`, or by setting the `AWS_CONFIRM_INSTANCE` environment variable.
+> This option is available for scenarios where the account that is running the service application
+> does not have access to the AWS account where the instance with the detection resides.
+
+Run the container with the minimum required environment variables:
+
+```bash
+docker run -d --restart unless-stopped \
+  -e FIG_BACKENDS=AWS \
+  -e EVENTS_SEVERITY_THRESHOLD=3 \
+  -e FALCON_CLOUD=<Falcon Cloud Region> \
+  -e FALCON_CLIENT_ID=<Falcon Client ID> \
+  -e FALCON_CLIENT_SECRET=<Falcon Client Secret> \
+  -e FALCON_APPLICATION_ID=<EXAMPLE-SECHUB-APPID> \
+  -e AWS_REGION=<AWS Region> \
+  quay.io/crowdstrike/falcon-integration-gateway:latest
+```
+
+The EC2 instance profile from Step 2 supplies AWS credentials to the container automatically via
+the instance metadata service; no static AWS keys are required.
+
+</details>
+
+<details><summary>From Source / <code>go install</code></summary>
+
+#### 4.1 Install a Go toolchain
+
+FIG requires **Go 1.26 or later** to build from source.
+
+```bash
+sudo dnf install -y golang git
+```
+
+> Use the package manager for your distro, or install Go from <https://go.dev/dl/>, to get a
+> 1.26+ toolchain.
 
 #### 4.2 Install the FIG
 
-Install the package:
+Install the `fig` binary directly from the module:
 
 ```bash
-python3 -m pip install 'falcon-integration-gateway>3.2.5'
+go install github.com/crowdstrike/falcon-integration-gateway/cmd/fig@latest
 ```
+
+This places a `fig` binary in `$(go env GOPATH)/bin`. Alternatively, clone the repository and
+build with `make build`, which produces a `fig` binary in the repository root.
 
 #### 4.3 Configure the FIG
 
-There are two different ways that you can configure the FIG to use the AWS backend.
-You can either use the `config.ini` file or you can use environment variables.
-
-> Refer to the [configuration options](../../../config/config.ini) available to the application
-> and backend.
-
-##### 4.3.1 Configure the FIG using the `config.ini` file
+There are two ways to configure the FIG to use the AWS backend: a `config.ini` file, or
+environment variables. Refer to the [configuration options](../../../config/config.ini)
+available to the application and backend.
 
 > [!NOTE]
-> Instance existence confirmation can be disabled using the `confirm_instance` config.ini in
-> the `[aws]` section or by setting the `AWS_CONFIRM_INSTANCE` environment variable. This option is
-> available for scenarios where the account that is running the service application does not have
-> access to the AWS account where the instance with the detection resides.
+> Instance existence confirmation can be disabled using the `confirm_instance` option in the
+> `[aws]` section of `config.ini`, or by setting the `AWS_CONFIRM_INSTANCE` environment variable.
+> This option is available for scenarios where the account that is running the service application
+> does not have access to the AWS account where the instance with the detection resides.
 
-Create the `config.ini` file and set the following minimum values:
+##### 4.3.1 Configure the FIG using a `config.ini` file
+
+Create a `config.ini` file and set the following minimum values. By default FIG searches for a
+config file in `/etc/fig` and the current directory, or you can point at one explicitly with the
+`--config` flag.
 
 ```ini
 [gateway]
@@ -180,7 +232,7 @@ backends = AWS
 severity_threshold = 3
 
 [falcon]
-cloud_region = <Falcon Cloud Region>
+cloud = <Falcon Cloud Region>
 client_id = <Falcon Client ID>
 client_secret = <Falcon Client Secret>
 application_id = <EXAMPLE-SECHUB-APPID>
@@ -191,12 +243,12 @@ region = <AWS Region>
 
 ##### 4.3.2 Configure the FIG using environment variables
 
-Alternatively, if you would like to use environment variables, set the following minimum environment variables:
+Alternatively, set the following minimum environment variables:
 
 ```bash
 export FIG_BACKENDS=AWS
 export EVENTS_SEVERITY_THRESHOLD=3
-export FALCON_CLOUD_REGION=<Falcon Cloud Region>
+export FALCON_CLOUD=<Falcon Cloud Region>
 export FALCON_CLIENT_ID=<Falcon Client ID>
 export FALCON_CLIENT_SECRET=<Falcon Client Secret>
 export FALCON_APPLICATION_ID=<EXAMPLE-SECHUB-APPID>
@@ -205,109 +257,27 @@ export AWS_REGION=<AWS Region>
 
 </details>
 
-<details><summary>Git Repository</summary>
-
-#### 4.1 Ensure the following packages are installed
-
-- Python 3.6+
-- pip
-- git
-
-```bash
-sudo dnf install python3 python3-pip python3-devel git
-```
-
-> Use the package manager for your distro to ensure these packages are installed.
-
-#### 4.2 Install the FIG
-
-1. Clone the repository
-
-    ```bash
-    git clone https://github.com/CrowdStrike/falcon-integration-gateway.git
-    ```
-
-1. Change to the FIG directory
-
-    ```bash
-    cd falcon-integration-gateway
-    ```
-
-1. Install the python dependencies.
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-#### 4.3 Configure the FIG
-
-There are two different ways that you can configure the FIG to use the AWS backend.
-You can either use the `config/config.ini` file or you can use environment variables.
-
-> Refer to the [configuration options](../../../config/config.ini) available to the application
-> and backend.
-
-##### 4.3.1 Configure the FIG using the `config/config.ini` file
-
-> [!NOTE]
-> Instance existence confirmation can be disabled using the `confirm_instance` config.ini in
-> the `[aws]` section or by setting the `AWS_CONFIRM_INSTANCE` environment variable. This option is
-> available for scenarios where the account that is running the service application does not have
-> access to the AWS account where the instance with the detection resides.
-
-1. Modify the `config/config.ini` file and set the following minimum values:
-
-    ```ini
-    [gateway]
-    backends = AWS
-
-    [events]
-    severity_threshold = 3
-
-    [falcon]
-    cloud_region = <Falcon Cloud Region>
-    client_id = <Falcon Client ID>
-    client_secret = <Falcon Client Secret>
-    application_id = <EXAMPLE-SECHUB-APPID>
-
-    [aws]
-    region = <AWS Region>
-    ```
-
-##### 4.3.2 Configure the FIG using environment variables
-
-1. Set the following minimum environment variables:
-
-    ```bash
-    export FIG_BACKENDS=AWS
-    export EVENTS_SEVERITY_THRESHOLD=3
-    export FALCON_CLOUD_REGION=<Falcon Cloud Region>
-    export FALCON_CLIENT_ID=<Falcon Client ID>
-    export FALCON_CLIENT_SECRET=<Falcon Client Secret>
-    export FALCON_APPLICATION_ID=<EXAMPLE-SECHUB-APPID>
-    export AWS_REGION=<AWS Region>
-    ```
-
-</details>
-
 ### 5. Run the FIG
 
-Run the following to start the FIG:
+If you used the container method, the FIG is already running — skip to verifying its output. If
+you built the binary from source, start it with:
 
 ```bash
-python3 -m fig
+fig
 ```
 
-Verify output
+Verify output. FIG logs structured JSON to stdout:
+
+```json
+{"time":"2023-10-18T16:45:43Z","level":"INFO","msg":"starting Falcon Integration Gateway","version":"1.0.0","commit":"abc1234","backends":["AWS"]}
+{"time":"2023-10-18T16:45:43Z","level":"INFO","msg":"event channel bounded","queue_depth":256}
+{"time":"2023-10-18T16:45:44Z","level":"INFO","msg":"opening streaming connection","whence":0,"offset":0}
+```
+
+To read the container logs instead:
 
 ```bash
-2023-10-18 16:45:43 fig MainThread INFO     Starting Falcon Integration Gateway 3.2.1
-2023-10-18 16:45:43 fig MainThread INFO     AWS Backend is enabled.
-2023-10-18 16:45:43 fig MainThread INFO     Enabled backends will only process events with types: {'DetectionSummaryEvent'}
-2023-10-18 16:45:44 fig cs_stream  INFO     Opening Streaming Connection
-2023-10-18 16:45:44 fig cs_stream  INFO     Established Streaming Connection: 200 OK
-...
-...
+docker logs <container>
 ```
 
 ### 6. Verify in Security Hub
@@ -341,8 +311,8 @@ export LOG_LEVEL=DEBUG
 
 If you see an error like the following:
 
-```
-botocore.exceptions.ClientError: An error occurred (AccessDeniedException) when calling the BatchImportFindings operation
+```json
+{"time":"2023-10-18T16:45:44Z","level":"ERROR","msg":"backend delivery failed","backend":"AWS","error":"operation error SecurityHub: BatchImportFindings, AccessDeniedException"}
 ```
 
 This typically means the CrowdStrike Falcon partner integration has not been enabled in Security Hub. Verify that you have completed [Step 1](#1-enable-crowdstrike-integration-in-security-hub) in the target region. If you are deploying across multiple regions, the integration must be enabled in each region separately.

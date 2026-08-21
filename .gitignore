@@ -6,6 +6,7 @@
 /config/devel.ini
 /runtest.sh
 *.DS_Store
+*offsets.json
 /build
 /dist
 
@@ -32,3 +33,4 @@ CLAUDE.md
 .clinerules/
 memory-bank/
 .worktrees/
+docs/reviews

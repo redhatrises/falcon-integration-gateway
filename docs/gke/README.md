@@ -1,6 +1,6 @@
 # Falcon Integration Gateway for SCC - Deployment Guide to GKE
 
-This guide works through deployment of Falcon Integration Gateway for SCC to GKE. Only the GCP [backend](https://github.com/CrowdStrike/falcon-integration-gateway/tree/main/fig/backends) will be enabled by this guide.
+This guide works through deployment of Falcon Integration Gateway for SCC to GKE. Only the GCP [backend](https://github.com/CrowdStrike/falcon-integration-gateway/tree/main/internal/backend) will be enabled by this guide.
 
 ### Prerequisites:
 

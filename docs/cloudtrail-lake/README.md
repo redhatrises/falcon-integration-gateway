@@ -1,7 +1,7 @@
 # Falcon Integration Gateway for AWS CloudTrail Lake - Deployment Guide
 This guide presents the different Deployment strategies that can be utilized to deploy the Falcon
 Integration Gateway to send events to AWS CloudTrail Lake. Only the CloudTrail Lake
-[backend](https://github.com/CrowdStrike/falcon-integration-gateway/tree/main/fig/backends) will be enabled
+[backend](https://github.com/CrowdStrike/falcon-integration-gateway/tree/main/internal/backend) will be enabled
 by this guide.
 
 ## Prerequisites

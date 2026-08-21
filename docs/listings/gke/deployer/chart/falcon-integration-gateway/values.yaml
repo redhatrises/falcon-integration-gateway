@@ -19,7 +19,7 @@ falcon:
     # Filter out events based on severity (allowed values 1-5, default 2)
     severity_threshold: 2
 
-    # Filter out events based on number of days past the event (default 14)
+    # Filter out events based on number of days past the event (default 21)
     older_than_days_threshold: 14
 
     # Configure logging level (ERROR, WARN, INFO, DEBUG)

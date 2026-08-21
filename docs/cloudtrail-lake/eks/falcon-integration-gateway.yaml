@@ -49,8 +49,8 @@ data:
     #level = DEBUG
 
     [falcon]
-    # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD_REGION env variable. (default us-1)
-    #cloud_region = us-1
+    # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable. (default autodiscover)
+    #cloud = us-1
 
     # Uncomment to provide application id. Needs to be different per each fig instance.
     # Alternatively, use FALCON_APPLICATION_ID env variable.
@@ -96,7 +96,7 @@ spec:
           imagePullPolicy: Always
           volumeMounts:
             - name: config-volume
-              mountPath: /fig/config/config.ini
+              mountPath: /etc/fig/config.ini
               subPath: config.ini
           envFrom:
           - secretRef:

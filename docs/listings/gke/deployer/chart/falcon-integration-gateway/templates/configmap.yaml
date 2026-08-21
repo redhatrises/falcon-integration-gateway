@@ -24,7 +24,7 @@ data:
     {{- if .Values.falcon.integration_gateway.severity_threshold }}
     severity_threshold = {{ .Values.falcon.integration_gateway.severity_threshold }}
     {{- end }}
-    # Uncomment to filter out events based on number of days past the event (default 365)
+    # Uncomment to filter out events based on number of days past the event (default 21)
     #older_than_days_threshold = 90
     {{- if .Values.falcon.integration_gateway.older_than_days_threshold }}
     older_than_days_threshold = {{ .Values.falcon.integration_gateway.older_than_days_threshold }}
@@ -38,10 +38,10 @@ data:
     {{- end }}
 
     [falcon]
-    # Uncomment to provide Falcon Cloud alternatively use FALCON_CLOUD_REGION to override
-    #cloud_region = us-1
+    # Uncomment to provide Falcon Cloud alternatively use FALCON_CLOUD to override
+    #cloud = us-1
     {{- if .Values.falcon.cloud_region }}
-    cloud_region = {{ .Values.falcon.cloud_region }}
+    cloud = {{ .Values.falcon.cloud_region }}
     {{- end }}
 
     # Uncomment to provide OAuth Secret alternatively use FALCON_CLIENT_SECRET to override

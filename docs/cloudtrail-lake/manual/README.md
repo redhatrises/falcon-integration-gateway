@@ -24,7 +24,7 @@ Using Docker in these examples, you can deploy the FIG as such:
   more configuration options along with their respective ENV variable
 #### In the example below, we are passing in our ~/.aws directory as our AWS credentials
 ```bash
-docker run -d --rm
+docker run -d --rm \
   -e FALCON_CLIENT_ID="$FALCON_CLIENT_ID" \
   -e FALCON_CLIENT_SECRET="$FALCON_CLIENT_SECRET" \
   -e FALCON_CLOUD_REGION="$FALCON_CLOUD_REGION" \
@@ -32,7 +32,10 @@ docker run -d --rm
   -e FIG_BACKENDS="$FIG_BACKENDS" \
   -e CLOUDTRAIL_LAKE_CHANNEL_ARN="$CLOUDTRAIL_LAKE_CHANNEL_ARN" \
   -e CLOUDTRAIL_LAKE_REGION="$CLOUDTRAIL_LAKE_REGION" \
-  -v ~/.aws:/fig/.aws quay.io/crowdstrike/falcon-integration-gateway:latest
+  -v ~/.aws:/aws:ro \
+  -e AWS_SHARED_CREDENTIALS_FILE=/aws/credentials \
+  -e AWS_CONFIG_FILE=/aws/config \
+  quay.io/crowdstrike/falcon-integration-gateway:latest
 ```
 
 
@@ -44,7 +47,7 @@ export AWS_SECRET_ACCESS_KEY=<The secret key for your AWS account>
 ```
 Then pass in those variables to Docker:
 ```bash
-docker run -d --rm
+docker run -d --rm \
   -e FALCON_CLIENT_ID="$FALCON_CLIENT_ID" \
   -e FALCON_CLIENT_SECRET="$FALCON_CLIENT_SECRET" \
   -e FALCON_CLOUD_REGION="$FALCON_CLOUD_REGION" \
@@ -63,12 +66,12 @@ To verify deployment, check the log of the container:
 docker logs <container>
 ```
 Example output:
-```bash
-2022-09-16 21:14:40 fig MainThread INFO     AWS CloudTrail Lake Backend is enabled.
-2022-09-16 21:14:42 fig cs_stream  INFO     Opening Streaming Connection
+```json
+{"time":"2022-09-16T21:14:40Z","level":"INFO","msg":"starting Falcon Integration Gateway","version":"1.0.0","commit":"abc1234","backends":["CLOUDTRAIL_LAKE"]}
+{"time":"2022-09-16T21:14:42Z","level":"INFO","msg":"opening streaming connection","whence":0,"offset":0}
 ```
 ## Upgrade
 To upgrade the container, stop any existing running FIG containers and run the following:
 ```bash
-docker pull quay.io/crowdstrike/falcon-integration-gateway
+docker pull quay.io/crowdstrike/falcon-integration-gateway:latest
 ```

@@ -43,12 +43,15 @@ properties:
     type: string
     x-google-marketplace:
       type: STRING
-    default: us-1
+    default: autodiscover
     enum:
+      - "autodiscover"
       - "us-1"
       - "us-2"
+      - "us-3"
       - "eu-1"
       - "us-gov-1"
+      - "us-gov-2"
   falcon.client_id:
     title: "Falcon API OAuth2 Credentials: Client ID"
     description: "API keypair used to authenticate with Falcon Platform and to initiate streaming session. Only the following permissions are required: READ 'Event streams' and READ 'Hosts'"

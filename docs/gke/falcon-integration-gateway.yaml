@@ -45,8 +45,8 @@ data:
     #level = DEBUG
 
     [falcon]
-    # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD_REGION env variable.
-    #cloud_region = us-1
+    # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable.
+    #cloud = us-1
 
     # Uncomment to provide OAuth Secret. Alternatively, use FALCON_CLIENT_SECRET env variable.
     #client_id = ABCD
@@ -85,7 +85,7 @@ spec:
             imagePullPolicy: Always
             volumeMounts:
               - name: config-volume
-                mountPath: /fig/config/config.ini
+                mountPath: /etc/fig/config.ini
                 subPath: config.ini
               - name: google-application-credentials
                 mountPath: /google-application-credentials.json

@@ -144,8 +144,8 @@ file.
   #level = DEBUG
 
   [falcon]
-  # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD_REGION env variable.
-  cloud_region = us-2
+  # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable.
+  cloud = us-2
 
   # Uncomment to provide application id. Needs to be different per each fig instance.
   # Alternatively, use FALCON_APPLICATION_ID env variable.
@@ -200,9 +200,7 @@ View the pod logs:
 kubectl logs -n falcon-integration-gateway <pod name>
 ```
 A successful deployment should have logs that start with:
-```bash
-2022-09-15 19:52:35 fig MainThread INFO     AWS CloudTrail Lake Backend is enabled.
-2022-09-15 19:52:36 fig cs_stream  INFO     Opening Streaming Connection
-...
-...
+```json
+{"time":"2022-09-15T19:52:35Z","level":"INFO","msg":"starting Falcon Integration Gateway","version":"1.0.0","commit":"abc1234","backends":["CLOUDTRAIL_LAKE"]}
+{"time":"2022-09-15T19:52:36Z","level":"INFO","msg":"opening streaming connection","whence":0,"offset":0}
 ```
