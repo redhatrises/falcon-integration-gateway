@@ -10,8 +10,7 @@
 // # Throughput and ordering
 //
 // All workers share one TLS connection and their writes are serialized under a
-// mutex. This mirrors the reference deployment, whose Python logging handler
-// held a lock around each emit, and is required for correctness rather than
+// mutex. Serialization is required for correctness rather than
 // convenience: interleaved writes on one stream would corrupt the NUL framing.
 // The connection is dialed lazily on the first delivered event and reused for
 // the process lifetime; a write error drops it so the next send re-dials.

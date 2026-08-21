@@ -33,7 +33,7 @@ var (
 
 // findSource returns the resource name of the FIG Source whose display name
 // matches under the organization, or "" when no such Source exists yet. It
-// mirrors the Python get_fig_source scan over ListSources.
+// scans ListSources for a matching display name.
 func (a *sccAdapter) findSource(ctx context.Context, orgID, displayName string) (string, error) {
 	it := a.client.ListSources(ctx, &securitycenterpb.ListSourcesRequest{
 		Parent: organizationPrefix + orgID,
@@ -69,8 +69,8 @@ func (a *sccAdapter) createSource(ctx context.Context, in createSourceInput) (st
 }
 
 // listAssetResourceNames returns the SCC resource names of the assets whose
-// numeric instance id matches within the project, mirroring the Python get_asset
-// ListAssets call filtered by resource_properties.id.
+// numeric instance id matches within the project, via a ListAssets call
+// filtered by resource_properties.id.
 func (a *sccAdapter) listAssetResourceNames(ctx context.Context, projectNumber, instanceID string) ([]string, error) {
 	it := a.client.ListAssets(ctx, &securitycenterpb.ListAssetsRequest{ //nolint:staticcheck // SCC v1 ListAssets is deprecated but still functional; migration to Cloud Asset Inventory is tracked in docs/reviews/FOLLOWUP-gcp-asset-api-migration.md
 		Parent: projectPrefix + projectNumber,
@@ -90,7 +90,7 @@ func (a *sccAdapter) listAssetResourceNames(ctx context.Context, projectNumber, 
 }
 
 // findingExists reports whether a finding with findingName already exists under
-// the source, mirroring the Python get_finding ListFindings filter by name.
+// the source, via a ListFindings filter by name.
 func (a *sccAdapter) findingExists(ctx context.Context, source, findingName string) (bool, error) {
 	it := a.client.ListFindings(ctx, &securitycenterpb.ListFindingsRequest{
 		Parent: source,

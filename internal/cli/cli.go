@@ -4,8 +4,7 @@
 // precedence) and hands the resolved, validated config to Run, which wires up
 // and drives the daemon (see run.go).
 //
-// It replaces the Python daemon's argparse-free `python -m fig` entry point;
-// the cobra command tree keeps main.go a single Execute call so the Makefile
+// The cobra command tree keeps main.go a single Execute call so the Makefile
 // (`go run ./cmd/fig/main.go`) and goreleaser (`main: ./cmd/fig/main.go`) still
 // build from one file.
 package cli

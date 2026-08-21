@@ -15,8 +15,7 @@ const findingsPathSegment = "/findings/"
 // findingInput carries the already-resolved values needed to construct one SCC
 // Finding. Resolution (host details, org/source walk, asset lookup, id and
 // severity derivation) happens in the caller so this builder stays a pure,
-// context-free transform that is trivial to test. It mirrors the fields the
-// Python backend's finding() populated.
+// context-free transform that is trivial to test.
 type findingInput struct {
 	source            string
 	findingID         string
@@ -38,7 +37,7 @@ type findingInput struct {
 // buildFinding assembles the SCC Finding for one detection event. The Finding is
 // ACTIVE, parented to the FIG Source, carries the console link and detection
 // category, and repeats the detection detail under source_properties (including
-// a nested ProcessInformation struct), matching the Python backend's payload.
+// a nested ProcessInformation struct).
 func buildFinding(in findingInput) *securitycenterpb.Finding {
 	sev := severity(in.severityName)
 	return &securitycenterpb.Finding{

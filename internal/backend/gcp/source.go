@@ -7,7 +7,7 @@ import (
 )
 
 // figSourceName is the display name of the single SCC Source under which every
-// forwarded detection is recorded, matching the Python backend.
+// forwarded detection is recorded.
 const figSourceName = "CrowdStrike Falcon"
 
 // figSourceDescription is the SCC Source description set on creation.
@@ -36,7 +36,7 @@ type sourceClient interface {
 // get-or-creating it once and memoizing the result. It is safe for concurrent
 // use by worker goroutines: concurrent callers for the same organization
 // collapse into a single find-or-create, so a source is created at most once per
-// organization, mirroring the Python backend's module-level source lock.
+// organization.
 type sourceCache struct {
 	client sourceClient
 	cache  *cache.Cache[string, string]

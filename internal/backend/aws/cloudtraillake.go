@@ -86,12 +86,12 @@ func (g *lastSeenOffsets) hydrate(ctx context.Context) (map[string]uint64, error
 	}
 	seen := map[string]uint64{}
 	if err := json.Unmarshal([]byte(val), &seen); err != nil {
-		// A prior gateway build (the Python daemon) persisted this parameter as
-		// a Python dict repr, e.g. {'feed1': 42}, rather than JSON. Migrate it in
+		// A prior gateway build persisted this parameter as a single-quoted
+		// dict repr, e.g. {'feed1': 42}, rather than JSON. Migrate it in
 		// place so an upgrade preserves the watermark instead of re-admitting a
 		// window of already-ingested audit events; the next put rewrites the
 		// parameter as JSON, so the migration self-heals after the first write.
-		if migrated, ok := parsePythonReprOffsets(val); ok {
+		if migrated, ok := parseLegacyReprOffsets(val); ok {
 			return migrated, nil
 		}
 		// The value is neither JSON nor a recognized legacy encoding. Rather than
@@ -103,13 +103,13 @@ func (g *lastSeenOffsets) hydrate(ctx context.Context) (map[string]uint64, error
 	return seen, nil
 }
 
-// parsePythonReprOffsets decodes a watermark map written by the legacy Python
-// gateway, which persisted this parameter as a Python dict repr such as
+// parseLegacyReprOffsets decodes a watermark map written by the legacy
+// gateway, which persisted this parameter as a single-quoted dict repr such as
 // {'feed1': 42} rather than JSON. Feed-id keys are a safe [0-9a-zA-Z] charset
 // and values are integers, so swapping single quotes for double quotes yields
-// valid JSON. The second result is false when the value is not a Python repr
-// this migration understands.
-func parsePythonReprOffsets(val string) (map[string]uint64, bool) {
+// valid JSON. The second result is false when the value is not a repr this
+// migration understands.
+func parseLegacyReprOffsets(val string) (map[string]uint64, bool) {
 	converted := strings.ReplaceAll(val, "'", `"`)
 	seen := map[string]uint64{}
 	if err := json.Unmarshal([]byte(converted), &seen); err != nil {

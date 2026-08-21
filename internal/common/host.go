@@ -4,8 +4,8 @@
 package common
 
 // HostDetails is the normalized subset of Falcon device details the pipeline and
-// enrichment-consuming backends need. It mirrors the projection the Python
-// gateway read from GetDeviceDetailsV2 (service_provider, service_provider_
+// enrichment-consuming backends need. It is the projection read from
+// GetDeviceDetailsV2 (service_provider, service_provider_
 // account_id, instance_id, platform_name), plus the device/sensor identifiers
 // and the host attributes the AWS Security Hub finding payload reports (host
 // name, network addresses, domain, agent/OS versions, last-seen, tags, site, OU).

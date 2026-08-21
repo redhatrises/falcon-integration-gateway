@@ -32,11 +32,10 @@ type findingClient interface {
 // Source it belongs to, its dedup id, and the payload.
 type submitFindingInput = findingCreateInput
 
-// findingSubmitter creates SCC findings, deduplicating against the server. It
-// mirrors the Python backend's server-side reconcile: getOrCreate checks whether
-// the finding already exists before creating it, and an AlreadyExists on create
-// is reconciled by re-checking the server so concurrent submits and cross-run
-// duplicates succeed.
+// findingSubmitter creates SCC findings, deduplicating against the server.
+// getOrCreate checks whether the finding already exists before creating it, and
+// an AlreadyExists on create is reconciled by re-checking the server so
+// concurrent submits and cross-run duplicates succeed.
 type findingSubmitter struct {
 	client findingClient
 }

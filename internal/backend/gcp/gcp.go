@@ -84,8 +84,8 @@ func (r *Runtime) resolveOrgSource(ctx context.Context, projectNumber string) (o
 // and its FIG Source, looks up the SCC resource name of the originating asset,
 // builds the Finding, and submits it (deduplicated per organization).
 //
-// Two conditions are a deliberate skip rather than a delivery failure, matching
-// the Python backend: a PermissionDenied on project/organization resolution (the
+// Two conditions are a deliberate skip rather than a delivery failure: a
+// PermissionDenied on project/organization resolution (the
 // service account lacks access to that project) and an asset that cannot be
 // found for the host's instance id. Both log a warning and return a
 // backend.DropError so the pipeline records the drop and advances its watermark.

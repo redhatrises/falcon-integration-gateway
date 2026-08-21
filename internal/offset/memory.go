@@ -1,14 +1,11 @@
 // Package offset implements durable resume-offset storage for the Falcon
-// Event Streams pipeline. It replaces the in-memory, at-most-once offset
-// tracking in the Python daemon's fig/queue/__init__.py (the FalconEvents
-// queue, which stored offsets in a plain dict and advanced them on dequeue).
+// Event Streams pipeline.
 //
 // A Store persists the highest committed offset per Falcon feed_id so that a
 // process restart resumes the stream where delivery last succeeded, giving
 // at-least-once semantics. Three implementations are provided:
 //
-//   - Memory: an in-memory map (tests and ephemeral runs); the direct analog
-//     of the Python dict but without dequeue-time advancement.
+//   - Memory: an in-memory map (tests and ephemeral runs).
 //   - File: an atomically-written JSON object persisted to disk, surviving
 //     process restarts.
 //   - SSM: the same JSON object persisted to an AWS Systems Manager parameter,
@@ -44,9 +41,7 @@ func applyOffset(offsets map[string]uint64, feedID string, offset uint64) bool {
 	return true
 }
 
-// Memory is an in-memory Store backed by a map guarded by a RWMutex. It is the
-// direct analog of the Python FalconEvents offset dict
-// (fig/queue/__init__.py), minus the at-most-once dequeue-time advancement.
+// Memory is an in-memory Store backed by a map guarded by a RWMutex.
 // Offsets do not survive process restarts; use File for durability.
 type Memory struct {
 	mu      sync.RWMutex

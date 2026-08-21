@@ -8,7 +8,7 @@
 // config.ini, and JSON/TOML/YAML use viper's built-in codecs.
 //
 // This package is logging-independent: logging reads the resolved level from
-// the returned Config, preserving the Python import-order constraint.
+// the returned Config rather than the other way around.
 package config
 
 import (
@@ -52,8 +52,8 @@ type GatewayConfig struct {
 	WorkerThreads int    `mapstructure:"worker_threads"`
 	Backends      string `mapstructure:"backends"`
 	// MetricsAddr is the listen address for the /metrics, /healthz, and /readyz
-	// HTTP server (e.g. ":9090"). Empty disables the server, preserving the
-	// Python daemon's no-HTTP-surface default.
+	// HTTP server (e.g. ":9090"). Empty disables the server, so no HTTP
+	// surface is exposed by default.
 	MetricsAddr string `mapstructure:"metrics_addr"`
 	// QueueDepth is the bounded event-channel capacity (backpressure bound). A
 	// value <= 0 selects the derived default of WorkerThreads*64, computed by
@@ -268,10 +268,10 @@ const (
 
 var groupOrder = []string{groupGateway, groupEvents, groupFalcon, groupExternalStores, groupBackends, groupCache}
 
-// settings is the single source of truth for FIG configuration. Env var names
-// are preserved EXACTLY from the Python port; note AWS_REGION binds to BOTH
-// aws.region and aws_sqs.region (one env var -> two keys), expressed here as two
-// rows. --config is not listed: it selects the config file rather than a key.
+// settings is the single source of truth for FIG configuration. Note that
+// AWS_REGION binds to BOTH aws.region and aws_sqs.region (one env var -> two
+// keys), expressed here as two rows. --config is not listed: it selects the
+// config file rather than a key.
 // The Group column places each flag under a --help heading (see groupOrder).
 var settings = []setting{
 	// [gateway]
@@ -364,9 +364,9 @@ func setDefaults(v *viper.Viper) {
 }
 
 // envAliases lists additional, lower-precedence environment variable names for a
-// key beyond its primary settings.Env. The Falcon cloud region was exposed as
-// FALCON_CLOUD_REGION in the Python daemon (and is still set by the shipped k8s
-// and helm manifests), so it is accepted alongside the primary FALCON_CLOUD name.
+// key beyond its primary settings.Env. The Falcon cloud region is also set by the
+// shipped k8s and helm manifests as FALCON_CLOUD_REGION, so it is accepted
+// alongside the primary FALCON_CLOUD name.
 var envAliases = map[string][]string{
 	"falcon.cloud": {"FALCON_CLOUD_REGION"},
 }

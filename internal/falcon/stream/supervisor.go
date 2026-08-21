@@ -19,7 +19,7 @@ import (
 )
 
 // noStreamsRetryInterval is how long listStreams waits between attempts when
-// Falcon reports no available streams. Ported from fig/falcon/stream.py:53.
+// Falcon reports no available streams.
 const noStreamsRetryInterval = 10 * time.Second
 
 // healthyRunThreshold is the minimum session duration that counts as "healthy":
@@ -30,9 +30,9 @@ const noStreamsRetryInterval = 10 * time.Second
 const healthyRunThreshold = 1 * time.Minute
 
 // Reconnect backoff bounds, used when the SupervisorConfig leaves them unset.
-// The max matches the Python management thread's 60s restart-poll cadence
-// (fig/falcon/stream.py:30); the initial interval keeps a prompt reconnect after
-// a healthy session without hammering on repeated failure.
+// The max matches a 60s restart-poll cadence; the initial interval keeps a
+// prompt reconnect after a healthy session without hammering on repeated
+// failure.
 const (
 	defaultReconnectInitialInterval = 1 * time.Second
 	defaultReconnectMaxInterval     = 60 * time.Second
@@ -94,10 +94,9 @@ type offsetStore interface {
 // stream partition, keeps each session refreshed, and rebuilds the whole session
 // whenever any connection closes.
 //
-// It is a re-architecture of StreamManagementThread + StreamRefreshThread in
-// fig/falcon/stream.py: the shared stop_event becomes a per-session
-// context.WithCancel, and the sys.exit(1) on failure (marked TODO in Python)
-// becomes a capped-exponential-backoff retry that runs forever.
+// Each session gets a per-session context.WithCancel that any reader can trip to
+// tear down the whole session, and a failure to (re)establish a session becomes
+// a capped-exponential-backoff retry that runs forever rather than exiting.
 type Supervisor struct {
 	cfg        SupervisorConfig
 	httpClient *http.Client
@@ -132,7 +131,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 // Run lists the streams and runs a session until it closes, then rebuilds —
 // forever, until ctx is cancelled. It returns ctx.Err() on graceful shutdown and
 // never returns on transient failure (each rebuild is spaced by a capped
-// exponential backoff), replacing the Python supervisor's sys.exit(1).
+// exponential backoff).
 //
 // out is the producer's side of the pipeline channel; the caller owns closing it
 // after Run returns.
@@ -192,8 +191,7 @@ func (s *Supervisor) runOnce(ctx context.Context, out chan<- *events.Event) erro
 	for _, st := range streams {
 		g.Go(func() error {
 			// A reader ending (for any reason) tears down the whole session so a
-			// fresh set of session tokens is obtained on rebuild — faithful to the
-			// Python shared stop_event.
+			// fresh set of session tokens is obtained on rebuild.
 			defer cancel()
 			return s.readStream(gctx, st, out)
 		})
@@ -205,10 +203,9 @@ func (s *Supervisor) runOnce(ctx context.Context, out chan<- *events.Event) erro
 }
 
 // listStreams lists the application's event streams, retrying a bounded number
-// of times when Falcon reports none available. Port of get_streams
-// (fig/falcon/stream.py:44-54): NoStreamsError is retried up to ReconnectRetries
-// times with a 10s pause; any other error returns immediately for the outer Run
-// loop to back off and retry.
+// of times when Falcon reports none available. A NoStreamsError is retried up to
+// ReconnectRetries times with a 10s pause; any other error returns immediately
+// for the outer Run loop to back off and retry.
 func (s *Supervisor) listStreams(ctx context.Context) ([]client.Stream, error) {
 	retries := max(s.cfg.ReconnectRetries, 1)
 
@@ -321,10 +318,10 @@ func (s *Supervisor) seedFloorFunc(feedID string) func(context.Context, uint64) 
 }
 
 // refreshStream re-ups the stream's session on a ticker until ctx is cancelled.
-// Port of StreamRefreshThread (fig/falcon/stream.py:57-80): the ticker fires at
-// 90% of the stream's refresh interval (the ticker's fire-after-interval
-// semantics match the Python sleep-then-refresh loop). A refresh error ends the
-// session so the outer loop rebuilds; ctx cancellation is a clean stop (nil).
+// The ticker fires at 90% of the stream's refresh interval (its
+// fire-after-interval semantics give a sleep-then-refresh loop). A refresh error
+// ends the session so the outer loop rebuilds; ctx cancellation is a clean stop
+// (nil).
 func (s *Supervisor) refreshStream(ctx context.Context, st client.Stream) error {
 	partition, err := st.Partition()
 	if err != nil {

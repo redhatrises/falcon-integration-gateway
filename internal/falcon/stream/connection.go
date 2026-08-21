@@ -3,10 +3,9 @@
 // connection to each, and emits decoded events onto a channel for the pipeline
 // to consume.
 //
-// It is a re-architecture of fig/falcon/stream.py. The offset/whence resumption
-// tree (connection.go) and the stream-URL construction are ported faithfully so
-// the Falcon wire behaviour is identical; everything else (supervision, backoff,
-// context cancellation, the read-idle watchdog) is new.
+// The offset/whence resumption tree (connection.go) and the stream-URL
+// construction reproduce the Falcon wire behaviour exactly; the supervision,
+// backoff, context cancellation, and read-idle watchdog are layered on top.
 //
 // The long-poll data feed uses a plain net/http client rather than the gofalcon
 // SDK: the feed is a long-lived, chunked, newline-delimited JSON response that
@@ -37,13 +36,12 @@ import (
 var errIdleTimeout = errors.New("stream: idle timeout")
 
 // defaultIdleTimeout bounds how long a connection waits for the next line (data
-// or heartbeat) before treating the wire as dead. The Python client used a 60s
-// socket timeout; a heartbeat arrives well inside this window.
+// or heartbeat) before treating the wire as dead. A heartbeat arrives well
+// inside this window.
 const defaultIdleTimeout = 120 * time.Second
 
-// resolveOffset ports the offset/whence decision tree from
-// fig/falcon/stream.py:88-109, substituting the persisted queueOffset
-// (offset.Store.Load) for the Python queue's last_offset.
+// resolveOffset makes the offset/whence decision, using the persisted
+// queueOffset (offset.Store.Load) as the last committed watermark.
 //
 // It returns the offset to resume from and whether to use whence=2 (start from
 // the newest event). whence=2 is used only on a first-ever connection with
@@ -95,9 +93,8 @@ func newConnection(cfg connectionConfig) *connection {
 	return &connection{cfg: cfg}
 }
 
-// buildURL constructs the long-poll URL. Port of StreamingConnection.open
-// (fig/falcon/stream.py:158-184): whence=2 on start-from-newest, otherwise an
-// offset of lastSeen+1 (or 0 when lastSeen is 0), with an optional
+// buildURL constructs the long-poll URL: whence=2 on start-from-newest,
+// otherwise an offset of lastSeen+1 (or 0 when lastSeen is 0), with an optional
 // &eventType= server-side filter appended.
 func (c *connection) buildURL() string {
 	filter := ""
@@ -123,9 +120,8 @@ func (c *connection) buildURL() string {
 // an error occurs.
 //
 // Return semantics:
-//   - nil: the server closed the stream (io.EOF), the normal signal in the
-//     Python client (a swallowed ChunkedEncodingError). The supervisor
-//     reconnects at the resumed offset.
+//   - nil: the server closed the stream (io.EOF), the normal end-of-stream
+//     signal. The supervisor reconnects at the resumed offset.
 //   - ctx.Err(): the parent context was cancelled (graceful shutdown).
 //   - errIdleTimeout / a wrapped network error: the wire died; reconnect.
 //

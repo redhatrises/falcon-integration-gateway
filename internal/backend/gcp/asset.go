@@ -18,13 +18,13 @@ const defaultAssetCacheSize = 4096
 
 // ErrAssetNotFound is returned when the SCC asset lookup finds no asset for an
 // instance id. Process treats it as a drop (log and advance) rather than a
-// delivery failure, mirroring the Python backend's AssetNotFound handling.
+// delivery failure.
 var ErrAssetNotFound = errors.New("gcp: asset not found")
 
 // assetLister is the seam over the SCC asset lookup. It returns the resource
 // names of the assets whose numeric instance id matches instanceID within the
-// project, mirroring the Python backend's get_asset ListAssets call filtered by
-// resource_properties.id. Returning plain strings keeps google protobuf types
+// project, via an SCC ListAssets call filtered by resource_properties.id.
+// Returning plain strings keeps google protobuf types
 // out of the seam so tests inject fakes without a live SCC endpoint.
 type assetLister interface {
 	listAssetResourceNames(ctx context.Context, projectNumber, instanceID string) ([]string, error)
@@ -59,10 +59,9 @@ func newAssetCache(client assetLister, maxEntries int) *assetCache {
 
 // resourceName returns the SCC resource name for instanceID within
 // projectNumber, resolving it on first use. Exactly one matching asset is
-// required: zero yields ErrAssetNotFound and more than one yields an error, both
-// matching the Python backend's asset() count handling. The lookup is keyed on
-// instanceID alone; projectNumber scopes the underlying list call and appears in
-// the not-found and ambiguity errors.
+// required: zero yields ErrAssetNotFound and more than one yields an error. The
+// lookup is keyed on instanceID alone; projectNumber scopes the underlying list
+// call and appears in the not-found and ambiguity errors.
 func (c *assetCache) resourceName(ctx context.Context, projectNumber, instanceID string) (string, error) {
 	return c.cache.Get(ctx, instanceID, func(ctx context.Context) (string, error) {
 		names, err := c.client.listAssetResourceNames(ctx, projectNumber, instanceID)

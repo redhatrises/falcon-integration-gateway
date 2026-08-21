@@ -373,20 +373,20 @@ func TestNewLastSeenOffsetsCreatesMissingParam(t *testing.T) {
 	}
 }
 
-// TestNewLastSeenOffsetsMigratesPythonRepr covers the upgrade path from the
-// Python daemon, which persisted this parameter as a Python dict repr (single
-// quotes) rather than JSON. The guard must migrate it in place so the watermark
+// TestNewLastSeenOffsetsMigratesLegacyRepr covers the upgrade path from the
+// legacy gateway, which persisted this parameter as a single-quoted dict repr
+// rather than JSON. The guard must migrate it in place so the watermark
 // is preserved and already-ingested audit events are not re-admitted.
-func TestNewLastSeenOffsetsMigratesPythonRepr(t *testing.T) {
+func TestNewLastSeenOffsetsMigratesLegacyRepr(t *testing.T) {
 	t.Parallel()
 	guardSSM := &fakeGuardSSM{params: map[string]string{"last_seen_offsets": "{'feed1': 42, 'feed2': 7}"}}
 	guard := newTestGuard(t, guardSSM)
 
 	if got := guard.seen("feed1"); got != 42 {
-		t.Errorf("seen(feed1) after Python-repr migration = %d, want 42", got)
+		t.Errorf("seen(feed1) after legacy-repr migration = %d, want 42", got)
 	}
 	if got := guard.seen("feed2"); got != 7 {
-		t.Errorf("seen(feed2) after Python-repr migration = %d, want 7", got)
+		t.Errorf("seen(feed2) after legacy-repr migration = %d, want 7", got)
 	}
 }
 
@@ -403,10 +403,10 @@ func TestNewLastSeenOffsetsToleratesUnparseableValue(t *testing.T) {
 	}
 }
 
-// TestParsePythonReprOffsets pins the repr→JSON migration helper directly: a
-// well-formed Python dict repr converts, while inputs the migration does not
-// understand report false so the caller falls back to an empty watermark.
-func TestParsePythonReprOffsets(t *testing.T) {
+// TestParseLegacyReprOffsets pins the repr→JSON migration helper directly: a
+// well-formed single-quoted dict repr converts, while inputs the migration does
+// not understand report false so the caller falls back to an empty watermark.
+func TestParseLegacyReprOffsets(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -414,8 +414,8 @@ func TestParsePythonReprOffsets(t *testing.T) {
 		wantOK bool
 		want   map[string]uint64
 	}{
-		{"python repr", "{'feed1': 42, 'feed2': 7}", true, map[string]uint64{"feed1": 42, "feed2": 7}},
-		{"empty python dict", "{}", true, map[string]uint64{}},
+		{"legacy repr", "{'feed1': 42, 'feed2': 7}", true, map[string]uint64{"feed1": 42, "feed2": 7}},
+		{"empty legacy dict", "{}", true, map[string]uint64{}},
 		{"already json is also accepted", `{"feed1":42}`, true, map[string]uint64{"feed1": 42}},
 		{"garbage", "not json or repr", false, nil},
 		{"partial", "{'feed1':", false, nil},
@@ -423,15 +423,15 @@ func TestParsePythonReprOffsets(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := parsePythonReprOffsets(tc.in)
+			got, ok := parseLegacyReprOffsets(tc.in)
 			if ok != tc.wantOK {
-				t.Fatalf("parsePythonReprOffsets(%q) ok = %v, want %v", tc.in, ok, tc.wantOK)
+				t.Fatalf("parseLegacyReprOffsets(%q) ok = %v, want %v", tc.in, ok, tc.wantOK)
 			}
 			if !tc.wantOK {
 				return
 			}
 			if len(got) != len(tc.want) {
-				t.Fatalf("parsePythonReprOffsets(%q) = %v, want %v", tc.in, got, tc.want)
+				t.Fatalf("parseLegacyReprOffsets(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 			for k, v := range tc.want {
 				if got[k] != v {

@@ -9,9 +9,8 @@ import (
 )
 
 // File is a durable, disk-backed Store. It persists a JSON object mapping
-// feed_id -> offset to a single file, replacing the in-memory-only offset
-// tracking in the Python daemon (fig/queue/__init__.py) so that resume offsets
-// survive a process restart.
+// feed_id -> offset to a single file so that resume offsets survive a process
+// restart.
 //
 // Writes are atomic (write to path+".tmp" then os.Rename) and buffered by an
 // embedded BufferedStore: a Commit updates in-memory state immediately but only

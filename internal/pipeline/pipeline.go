@@ -52,7 +52,7 @@ const (
 	// policyDrop discards a failed event: it logs dropped=true, bumps
 	// fig_events_dropped_after_retry_total, and treats the event as handled so
 	// the resume watermark advances. There is no dead-letter sink — the payload
-	// is gone. This matches Python's move-on resilience while making the loss
+	// is gone. This trades durability for liveness while keeping the loss
 	// visible. This is the default.
 	policyDrop deliveryPolicy = iota
 	// policyBlock does NOT mark a failed event done, so its offset never enters
@@ -300,8 +300,7 @@ func shouldWarnNoOp(received, filtered uint64) bool {
 
 // worker consumes events from the dispatcher until the channel is closed. Each
 // event is dispatched inside a panic-recovery boundary so one poison event
-// never kills the worker — a faithful port of Python's blanket "except
-// Exception" in WorkerThread.run.
+// never kills the worker.
 func (p *Pipeline) worker(ctx context.Context, id int, work <-chan *events.Event) {
 	logger := p.logger.With("component", "pipeline", "worker", id)
 	for ev := range work {
@@ -310,8 +309,7 @@ func (p *Pipeline) worker(ctx context.Context, id int, work <-chan *events.Event
 }
 
 // safeDispatch runs dispatch under a deferred recover so a panic in a backend
-// or in event handling is logged and contained, never crashing the worker — a
-// faithful port of Python's blanket "except Exception" in WorkerThread.run.
+// or in event handling is logged and contained, never crashing the worker.
 //
 // A recovered panic is treated as a delivery failure subject to the configured
 // policy: under drop (default) the event is discarded and its watermark
@@ -369,11 +367,10 @@ func (p *Pipeline) dispatch(ctx context.Context, logger *slog.Logger, ev *events
 	metrics.EventsReceived.Inc()
 	p.winReceived.Add(1)
 
-	// Global severity/age filter, applied before the per-backend gates. Port of
-	// Event.irrelevant() (fig/falcon/eventss.py). Python dropped these events
-	// before the queue so they never advanced the offset; here a filtered event
-	// is marked done so the resume watermark advances past long spans of
-	// sub-threshold or aged-out events rather than re-scanning them on restart.
+	// Global severity/age filter, applied before the per-backend gates. A
+	// filtered event is marked done so the resume watermark advances past long
+	// spans of sub-threshold or aged-out events rather than re-scanning them on
+	// restart.
 	if p.isFilteredOut(ev) {
 		metrics.EventsFiltered.Inc()
 		p.winFiltered.Add(1)
@@ -571,11 +568,10 @@ func (p *Pipeline) markDone(ctx context.Context, logger *slog.Logger, ev *events
 }
 
 // isFilteredOut reports whether the global severity/age filter drops this
-// event. The age cutoff is recomputed from the current time on each call
-// (matching Python's cut_off_date) so a long-running process keeps aging events
-// out correctly; a zero olderThanDays leaves the cutoff as the zero Time, which
-// no real event predates, disabling the age check. A zero sevThreshold likewise
-// disables the severity check.
+// event. The age cutoff is recomputed from the current time on each call so a
+// long-running process keeps aging events out correctly; a zero olderThanDays
+// leaves the cutoff as the zero Time, which no real event predates, disabling
+// the age check. A zero sevThreshold likewise disables the severity check.
 func (p *Pipeline) isFilteredOut(ev *events.Event) bool {
 	var cutoff time.Time
 	if p.olderThanDays > 0 {
@@ -587,9 +583,7 @@ func (p *Pipeline) isFilteredOut(ev *events.Event) bool {
 // cloudDetectionRelevant is the second dispatch gate. It applies only to
 // EppDetectionSummaryEvent: the event is dropped when its cloud provider is in
 // events.detections_exclude_clouds. A device that resolves to no provider (empty
-// string) is dropped only when "unrecognized" is excluded, matching Python's
-// treatment of unknown-cloud detections. Port of
-// Backends.cloud_detection_is_relevant.
+// string) is dropped only when "unrecognized" is excluded.
 //
 // The provider comes from Hosts enrichment, which is triggered lazily: this gate
 // enriches only for detection events and only when the exclude set is non-empty,

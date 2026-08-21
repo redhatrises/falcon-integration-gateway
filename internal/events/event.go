@@ -42,10 +42,10 @@ type Metadata struct {
 
 // Event is one decoded line from the Falcon Event Streams data feed.
 //
-// FeedID is the stream partition/feed identifier parsed from the datafeed URL
-// (Python parses it with the regex [0-9a-zA-Z]+, so it is a string, not an
-// int). Raw holds a copy of the original line for backends that forward the
-// verbatim JSON (e.g. GENERIC).
+// FeedID is the stream partition/feed identifier parsed from the datafeed URL;
+// it is an alphanumeric ([0-9a-zA-Z]+) token, so it is a string, not an int.
+// Raw holds a copy of the original line for backends that forward the verbatim
+// JSON (e.g. GENERIC).
 type Event struct {
 	Metadata Metadata       `json:"metadata"`
 	Event    map[string]any `json:"event"`
@@ -101,21 +101,20 @@ func (e *Event) DedupKey() string {
 
 // CreationTime returns the event creation time as a UTC time.Time.
 //
-// The Python code (fig/falcon/models.py:84-85) used naive local timestamps in
-// the age filter, causing a timezone bug; this always returns UTC. The stream
-// timestamp is epoch milliseconds.
+// The stream timestamp is epoch milliseconds; this always interprets it as UTC
+// so the age filter is timezone-independent.
 func (e *Event) CreationTime() time.Time {
 	return time.UnixMilli(e.Metadata.EventCreationTime).UTC()
 }
 
 // MappedSeverity maps the event's SeverityName to the internal 1-5 scale.
 //
-// Port of fig/falcon/models.py:42-52: a missing SeverityName key defaults to
-// "Critical" (5) and any unrecognized value also defaults to 5.
+// A missing SeverityName key defaults to "Critical" (5) and any unrecognized
+// value also defaults to 5.
 func (e *Event) MappedSeverity() int {
 	name, ok := e.stringField("SeverityName")
 	if !ok {
-		// Python defaults a missing key to "Critical" -> 5.
+		// A missing key defaults to "Critical" -> 5.
 		return 5
 	}
 	if v, found := severityByName[name]; found {

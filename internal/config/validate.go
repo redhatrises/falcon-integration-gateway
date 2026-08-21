@@ -52,10 +52,9 @@ func appendIfEmpty(errs []error, msg func(name string) error, fields ...field) [
 	return errs
 }
 
-// Validate ports every branch of validate()/validate_falcon()/validate_events()/
-// validate_backends() (fig/config/__init__.py:142-238). Unlike the Python code
-// (which fails on the first error), it accumulates ALL problems with
-// errors.Join so the operator sees every misconfiguration at once.
+// Validate checks the falcon, events, and backend configuration. It accumulates
+// ALL problems with errors.Join rather than failing on the first error, so the
+// operator sees every misconfiguration at once.
 func (c *Config) Validate() error {
 	var errs []error
 
@@ -84,8 +83,8 @@ func (c *Config) validateFalcon() []error {
 	return errs
 }
 
-// validateEvents ports validate_events(). Note: start_from_newest is a real
-// bool here, so the Python "must be true or false" string check is unnecessary.
+// validateEvents checks the events configuration. start_from_newest is a real
+// bool, so no true/false string parsing is needed.
 func (c *Config) validateEvents() []error {
 	var errs []error
 

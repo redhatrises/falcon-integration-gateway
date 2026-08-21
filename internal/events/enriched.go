@@ -10,7 +10,7 @@ import (
 // ArcConfig is the Azure Arc agent configuration read from a non-Azure host's
 // agentconfig.json over RTR. It is the subset of identifiers the Azure backend
 // attaches to a finding so an Arc-connected machine is correlated to its Azure
-// resource. It mirrors the keys the Python gateway projected (AZURE_ARC_KEYS).
+// resource.
 type ArcConfig struct {
 	ResourceName   string
 	ResourceGroup  string
@@ -37,7 +37,7 @@ type Enricher interface {
 //
 // The host-details lookup is performed at most once per event: the first field
 // accessor triggers it and every subsequent accessor reuses the cached result
-// (or error). This mirrors the per-event memoization of the Python FalconEvent.
+// (or error), so a single event never hits the network more than once.
 //
 // The error is memoized alongside the result, so all accessors on one event
 // observe a single lookup outcome rather than re-fetching. This is safe because

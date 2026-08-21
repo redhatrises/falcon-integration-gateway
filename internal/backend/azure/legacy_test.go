@@ -20,11 +20,11 @@ func fixedTime() time.Time {
 func TestBuildSignatureKnownGood(t *testing.T) {
 	t.Parallel()
 
-	// The expected value was computed by an independent implementation (Python's
-	// hmac module) for these fixed inputs, so this locks the exact string-to-hash
-	// byte layout — method, content length, content type, the x-ms-date header,
-	// and the /api/logs resource path. A defect in any of those is caught here,
-	// which a test that re-ran the production construction could not detect.
+	// The expected value was computed by an independent HMAC implementation for
+	// these fixed inputs, so this locks the exact string-to-hash byte layout —
+	// method, content length, content type, the x-ms-date header, and the
+	// /api/logs resource path. A defect in any of those is caught here, which a
+	// test that re-ran the production construction could not detect.
 	u := &legacyUploader{
 		workspaceID: "ws-123",
 		primaryKey:  base64.StdEncoding.EncodeToString([]byte("super-secret-key")),

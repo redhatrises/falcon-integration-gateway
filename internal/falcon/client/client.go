@@ -126,9 +126,8 @@ var streamPartitionRe = regexp.MustCompile(`.*/sensors/entities/datafeed-actions
 // EXACTLY from fig/falcon/models.py:116-117.
 var streamFeedIDRe = regexp.MustCompile(`.*/sensors/entities/datafeed/v1/([0-9a-zA-Z]+)\?`)
 
-// Stream is a resolved event-stream descriptor returned by ListStreams. Port of
-// the Stream class in fig/falcon/models.py:92-121. The accessors mirror the
-// Python properties (token, url, refresh_interval, partition, feed_id).
+// Stream is a resolved event-stream descriptor returned by ListStreams. The
+// accessors expose the token, url, refresh_interval, partition, and feed_id.
 type Stream struct {
 	token           string
 	url             string
@@ -387,10 +386,10 @@ func (c *Client) InitRTRSession(ctx context.Context, deviceID string) (*RTRSessi
 }
 
 // RTRCommand describes a Real Time Response command to run in an open session.
-// Admin selects the privileged command endpoint: fig/falcon_data.py's MDM lookup
-// runs the Windows registry query as a regular command and the macOS
-// system_profiler script as an admin command (fig/falcon_data.py:69-88), which
-// Python passes as the 'RTR_ExecuteCommand' vs 'RTR_ExecuteAdminCommand' action.
+// Admin selects the privileged command endpoint: the MDM lookup runs the Windows
+// registry query as a regular command and the macOS system_profiler script as an
+// admin command, which maps to the 'RTR_ExecuteCommand' vs
+// 'RTR_ExecuteAdminCommand' action.
 type RTRCommand struct {
 	SessionID     string
 	BaseCommand   string
@@ -495,8 +494,7 @@ func (c *Client) CheckRTRCommandStatus(ctx context.Context, cloudRequestID strin
 	return st, nil
 }
 
-// DeleteRTRSession closes an open RTR session. It has no Python analogue in
-// fig/falcon/api.py (the Python RTRSession.close lives in fig/falcon/rtr.py); the
+// DeleteRTRSession closes an open RTR session. The
 // enrichment layer defers it after opening a session so the MDM lookup never
 // leaks a session. The 204 response still carries an errors array, so a populated
 // one is surfaced as an error rather than treated as success.
@@ -608,8 +606,7 @@ func (c *Client) rtrExecuteActiveResponder(ctx context.Context, sessionID, baseC
 }
 
 // pollRTRComplete polls a queued command by cloud request id until it reports
-// complete, honoring the caller's context deadline between polls. Python's
-// _rtr_wait (fig/falcon/rtr.py) busy-loops without a bound; the poll here is
+// complete, honoring the caller's context deadline between polls. The poll is
 // bounded and cancellable by the caller's context.
 func (c *Client) pollRTRComplete(ctx context.Context, cloudRequestID string) (*RTRCommandStatus, error) {
 	var status *RTRCommandStatus
