@@ -235,3 +235,83 @@ func TestCacheGenericKeyValue(t *testing.T) {
 		t.Errorf("loads = %d, want 1", loads)
 	}
 }
+
+func TestCachePeek(t *testing.T) {
+	t.Parallel()
+	c := New[string, string](0)
+
+	if _, ok := c.Peek("k"); ok {
+		t.Fatal("Peek() on empty cache = ok, want miss")
+	}
+
+	c.Store("k", "v")
+	got, ok := c.Peek("k")
+	if !ok {
+		t.Fatal("Peek() after Store = miss, want hit")
+	}
+	if got != "v" {
+		t.Errorf("Peek() = %q, want %q", got, "v")
+	}
+}
+
+func TestCacheStorePopulates(t *testing.T) {
+	t.Parallel()
+	c := New[string, string](0)
+
+	for k, v := range map[string]string{"a": "1", "b": "2", "c": "3"} {
+		c.Store(k, v)
+	}
+	if got := c.size(); got != 3 {
+		t.Fatalf("size = %d, want 3", got)
+	}
+	for k, want := range map[string]string{"a": "1", "b": "2", "c": "3"} {
+		if got, ok := c.Peek(k); !ok || got != want {
+			t.Errorf("Peek(%q) = (%q, %v), want (%q, true)", k, got, ok, want)
+		}
+	}
+}
+
+// TestCacheStoreIdempotent proves re-storing a present key keeps its original
+// value and FIFO position: the second Store neither overwrites the key nor
+// double-counts it toward the eviction bound.
+func TestCacheStoreIdempotent(t *testing.T) {
+	t.Parallel()
+	c := New[string, string](3)
+
+	c.Store("a", "1")
+	c.Store("b", "2")
+	// Re-store "a" (present) then add a new key "c". "a" keeps "1" and does not
+	// re-enter the FIFO order; only "c" is appended, giving order [a, b, c].
+	c.Store("a", "overwrite")
+	c.Store("c", "3")
+
+	if got, _ := c.Peek("a"); got != "1" {
+		t.Errorf("Peek(a) = %q, want %q (present key keeps original value)", got, "1")
+	}
+	if got := c.size(); got != 3 {
+		t.Fatalf("size = %d, want 3", got)
+	}
+
+	// Overflow by one: the oldest-inserted key "a" evicts, not the re-observed
+	// duplicate, proving "a" was not pushed to the back of the FIFO order.
+	c.Store("d", "4")
+	if _, ok := c.Peek("a"); ok {
+		t.Error("Peek(a) = hit, want evicted (oldest by original insertion order)")
+	}
+	if got := c.size(); got != 3 {
+		t.Errorf("size = %d, want 3 (bound holds)", got)
+	}
+}
+
+// TestCacheStoreBounded proves Store honors the eviction bound as keys accumulate
+// past capacity.
+func TestCacheStoreBounded(t *testing.T) {
+	t.Parallel()
+	c := New[string, string](2)
+	for _, k := range []string{"a", "b", "c", "d"} {
+		c.Store(k, k)
+	}
+	if got := c.size(); got != 2 {
+		t.Errorf("size = %d, want 2 (bound holds as keys accumulate)", got)
+	}
+}

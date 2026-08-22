@@ -42,6 +42,14 @@ gcloud organizations add-iam-policy-binding $ORG_ID \
   --member="serviceAccount:$SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com" \
   --role='roles/securitycenter.admin'
 
+# Grant the service account the compute.viewer role so it can resolve the Compute Engine
+# instance behind each detection (used for the Finding's resource name). Granting at the
+# organization level covers every project that forwards findings; without it, affected
+# detections are logged and dropped.
+gcloud organizations add-iam-policy-binding $ORG_ID \
+  --member="serviceAccount:$SERVICE_ACCOUNT@$PROJECT_ID.iam.gserviceaccount.com" \
+  --role='roles/compute.viewer'
+
 # Encode credentials for passing them to Falcon Integration Gateway
 base64 $KEY_LOCATION
 ```

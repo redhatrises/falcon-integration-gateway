@@ -84,13 +84,17 @@ func (r *Runtime) resolveOrgSource(ctx context.Context, projectNumber string) (o
 // and its FIG Source, looks up the SCC resource name of the originating asset,
 // builds the Finding, and submits it (deduplicated per organization).
 //
-// Two conditions are a deliberate skip rather than a delivery failure: a
-// PermissionDenied on project/organization resolution (the
-// service account lacks access to that project) and an asset that cannot be
-// found for the host's instance id. Both log a warning and return a
-// backend.DropError so the pipeline records the drop and advances its watermark.
-// Every other failure is returned so the pipeline's delivery-failure policy
-// governs.
+// Several conditions are a deliberate skip rather than a delivery failure, each
+// logging a warning and returning a backend.DropError so the pipeline records
+// the drop and advances its watermark: a PermissionDenied on project/organization
+// resolution or on the Compute Engine instance lookup (the service account lacks
+// the required access), an asset that cannot be found for the host's instance
+// id, and more than one asset matching that instance id (no single resource name
+// can be chosen). Retrying the same call immediately cannot resolve any of these:
+// a permission gap is operator-resolvable (and, because failed lookups are not
+// cached, delivery self-heals on the next event once the grant lands), while a
+// multiple-match is a genuine anomaly. Every other failure is returned so the
+// pipeline's delivery-failure policy governs.
 func (r *Runtime) Process(ctx context.Context, ev *events.EnrichedEvent) error {
 	projectNumber, err := ev.CloudProviderAccountID(ctx)
 	if err != nil {
@@ -118,6 +122,16 @@ func (r *Runtime) Process(ctx context.Context, ev *events.EnrichedEvent) error {
 			r.logger.Warn("corresponding asset not found in GCP project; skipping detection",
 				"project_number", projectNumber, "instance_id", instanceID)
 			return backend.Dropped("asset_not_found")
+		}
+		if errors.Is(err, ErrMultipleAssets) {
+			r.logger.Warn("multiple GCP assets matched the host instance id; skipping detection as no single resource name can be chosen",
+				"project_number", projectNumber, "instance_id", instanceID)
+			return backend.Dropped("multiple_assets")
+		}
+		if errors.Is(err, ErrAssetPermissionDenied) {
+			r.logger.Warn("permission denied looking up the Compute Engine instance; grant the service account roles/compute.viewer on the scope that forwards findings",
+				"project_number", projectNumber, "instance_id", instanceID, "error", err)
+			return backend.Dropped("asset_permission_denied")
 		}
 		return fmt.Errorf("gcp: resolving asset resource name: %w", err)
 	}

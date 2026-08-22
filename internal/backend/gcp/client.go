@@ -9,7 +9,9 @@ import (
 	resourcemanager "cloud.google.com/go/resourcemanager/apiv3"
 	securitycenter "cloud.google.com/go/securitycenter/apiv1"
 	"cloud.google.com/go/securitycenter/apiv1/securitycenterpb"
+	compute "google.golang.org/api/compute/v1"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 
 	"github.com/crowdstrike/falcon-integration-gateway/internal/backend"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/cache"
@@ -27,7 +29,6 @@ type sccAdapter struct {
 
 var (
 	_ sourceClient  = (*sccAdapter)(nil)
-	_ assetLister   = (*sccAdapter)(nil)
 	_ findingClient = (*sccAdapter)(nil)
 )
 
@@ -66,27 +67,6 @@ func (a *sccAdapter) createSource(ctx context.Context, in createSourceInput) (st
 		return "", err
 	}
 	return src.GetName(), nil
-}
-
-// listAssetResourceNames returns the SCC resource names of the assets whose
-// numeric instance id matches within the project, via a ListAssets call
-// filtered by resource_properties.id.
-func (a *sccAdapter) listAssetResourceNames(ctx context.Context, projectNumber, instanceID string) ([]string, error) {
-	it := a.client.ListAssets(ctx, &securitycenterpb.ListAssetsRequest{ //nolint:staticcheck // SCC v1 ListAssets is deprecated but still functional; migration to Cloud Asset Inventory is tracked in docs/reviews/FOLLOWUP-gcp-asset-api-migration.md
-		Parent: projectPrefix + projectNumber,
-		Filter: fmt.Sprintf("resource_properties.id=%q", instanceID),
-	})
-	var names []string
-	for {
-		res, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			return names, nil
-		}
-		if err != nil {
-			return nil, err
-		}
-		names = append(names, res.GetAsset().GetSecurityCenterProperties().GetResourceName())
-	}
 }
 
 // findingExists reports whether a finding with findingName already exists under
@@ -129,6 +109,10 @@ func New(_ *config.Config, logger *slog.Logger) (backend.Backend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gcp: creating Security Command Center client: %w", err)
 	}
+	computeSvc, err := compute.NewService(ctx, option.WithScopes(compute.ComputeReadonlyScope))
+	if err != nil {
+		return nil, fmt.Errorf("gcp: creating Compute Engine client: %w", err)
+	}
 	projects, err := resourcemanager.NewProjectsClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("gcp: creating resource-manager projects client: %w", err)
@@ -145,7 +129,7 @@ func New(_ *config.Config, logger *slog.Logger) (backend.Backend, error) {
 	return &Runtime{
 		orgs:      &orgCache{resolver: &hierarchyResolver{rm: rm}, cache: cache.New[string, string](0)},
 		sources:   &sourceCache{client: scc, cache: cache.New[string, string](0)},
-		assets:    newAssetCache(scc, defaultAssetCacheSize),
+		assets:    newAssetCache(newComputeResolver(computeSvc), defaultAssetCacheSize),
 		submitter: &findingSubmitter{client: scc},
 		logger:    logger,
 	}, nil

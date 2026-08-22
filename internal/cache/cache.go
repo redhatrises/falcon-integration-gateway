@@ -70,11 +70,37 @@ func (c *Cache[K, V]) Get(ctx context.Context, key K, load func(context.Context)
 	return v, nil
 }
 
+// Peek returns the cached value for key without loading, taking only the read
+// lock. It is the cheap hit path for a caller that populates the cache out of
+// band with Store (for example an asset cache whose lookups are collapsed by a
+// singleflight group outside the cache) rather than through Get's per-key
+// loader.
+func (c *Cache[K, V]) Peek(key K) (V, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	v, ok := c.entries[key]
+	return v, ok
+}
+
+// Store memoizes value for key under the write lock. A key already present keeps
+// its original value and insertion order, so re-storing it neither duplicates
+// FIFO bookkeeping nor churns eviction order. When bounded, inserting a new key
+// evicts the oldest-inserted entry on overflow.
+func (c *Cache[K, V]) Store(key K, value V) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.storeLocked(key, value)
+}
+
 // storeLocked memoizes value for key and, when bounded, records insertion order
-// and evicts the oldest entry on overflow. The double-checked Get guarantees a
-// key reaches here at most once, so order and entries stay in step. The caller
-// must hold c.mu for writing.
+// and evicts the oldest entry on overflow. It is idempotent: re-storing an
+// existing key leaves its value and FIFO position untouched, so order and
+// entries stay in step whether a key arrives via Get or Store. The caller must
+// hold c.mu for writing.
 func (c *Cache[K, V]) storeLocked(key K, value V) {
+	if _, exists := c.entries[key]; exists {
+		return
+	}
 	c.entries[key] = value
 	if c.maxEntries <= 0 {
 		return

@@ -163,11 +163,11 @@ func gcpHost() *common.HostDetails {
 }
 
 // newProcessRuntime wires a Runtime with the given seams and empty caches.
-func newProcessRuntime(resolver orgResolver, source sourceClient, lister assetLister, findings findingClient) *Runtime {
+func newProcessRuntime(resolver orgResolver, source sourceClient, assets assetResolver, findings findingClient) *Runtime {
 	return &Runtime{
 		orgs:      &orgCache{resolver: resolver, cache: cache.New[string, string](0)},
 		sources:   &sourceCache{client: source, cache: cache.New[string, string](0)},
-		assets:    newAssetCache(lister, defaultAssetCacheSize),
+		assets:    newAssetCache(assets, defaultAssetCacheSize),
 		submitter: &findingSubmitter{client: findings},
 		logger:    slog.New(slog.DiscardHandler),
 	}
@@ -180,7 +180,7 @@ func TestProcessCreatesFinding(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{byProj: map[string]string{"111111111": "42"}},
 		&fakeSourceClient{existing: map[string]string{"42": "organizations/42/sources/fig"}},
-		&fakeAssetLister{names: []string{"//compute.googleapis.com/projects/p/zones/z/instances/i"}},
+		&fakeResolver{names: []string{"//compute.googleapis.com/projects/p/zones/z/instances/i"}},
 		fc,
 	)
 
@@ -214,7 +214,7 @@ func TestProcessPermissionDeniedDrops(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{err: status.Error(codes.PermissionDenied, "denied")},
 		&fakeSourceClient{},
-		&fakeAssetLister{},
+		&fakeResolver{},
 		fc,
 	)
 
@@ -239,7 +239,7 @@ func TestProcessPermissionDeniedOnSourceLogsOrgID(t *testing.T) {
 	rt := &Runtime{
 		orgs:      &orgCache{resolver: &fakeOrgResolver{byProj: map[string]string{"111111111": "42"}}, cache: cache.New[string, string](0)},
 		sources:   &sourceCache{client: &fakeSourceClient{createErr: status.Error(codes.PermissionDenied, "denied")}, cache: cache.New[string, string](0)},
-		assets:    newAssetCache(&fakeAssetLister{}, defaultAssetCacheSize),
+		assets:    newAssetCache(&fakeResolver{}, defaultAssetCacheSize),
 		submitter: &findingSubmitter{client: fc},
 		logger:    slog.New(h),
 	}
@@ -272,7 +272,7 @@ func TestProcessAssetNotFoundDrops(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{byProj: map[string]string{"111111111": "42"}},
 		&fakeSourceClient{existing: map[string]string{"42": "organizations/42/sources/fig"}},
-		&fakeAssetLister{names: nil},
+		&fakeResolver{},
 		fc,
 	)
 
@@ -288,6 +288,72 @@ func TestProcessAssetNotFoundDrops(t *testing.T) {
 		t.Errorf("createFinding calls = %d, want 0 (dropped)", len(fc.created))
 	}
 }
+
+func TestProcessMultipleAssetsDrops(t *testing.T) {
+	t.Parallel()
+
+	fc := &recordingFindingClient{}
+	rt := newProcessRuntime(
+		&fakeOrgResolver{byProj: map[string]string{"111111111": "42"}},
+		&fakeSourceClient{existing: map[string]string{"42": "organizations/42/sources/fig"}},
+		&fakeResolver{names: []string{
+			"//compute/instances/a",
+			"//compute/instances/b",
+		}},
+		fc,
+	)
+
+	err := rt.Process(context.Background(), processEvent(&testutil.FakeEnricher{Host: gcpHost()}))
+	var drop *backend.DropError
+	if !errors.As(err, &drop) {
+		t.Fatalf("Process error = %v, want a *backend.DropError", err)
+	}
+	if drop.Reason != "multiple_assets" {
+		t.Errorf("drop reason = %q, want %q", drop.Reason, "multiple_assets")
+	}
+	if len(fc.created) != 0 {
+		t.Errorf("createFinding calls = %d, want 0 (dropped)", len(fc.created))
+	}
+}
+
+func TestProcessAssetPermissionDeniedDrops(t *testing.T) {
+	t.Parallel()
+
+	h := &capturingHandler{}
+	fc := &recordingFindingClient{}
+	rt := &Runtime{
+		orgs:      &orgCache{resolver: &fakeOrgResolver{byProj: map[string]string{"111111111": "42"}}, cache: cache.New[string, string](0)},
+		sources:   &sourceCache{client: &fakeSourceClient{existing: map[string]string{"42": "organizations/42/sources/fig"}}, cache: cache.New[string, string](0)},
+		assets:    newAssetCache(&fakeResolver{err: ErrAssetPermissionDenied}, defaultAssetCacheSize),
+		submitter: &findingSubmitter{client: fc},
+		logger:    slog.New(h),
+	}
+
+	err := rt.Process(context.Background(), processEvent(&testutil.FakeEnricher{Host: gcpHost()}))
+	var drop *backend.DropError
+	if !errors.As(err, &drop) {
+		t.Fatalf("Process error = %v, want a *backend.DropError", err)
+	}
+	if drop.Reason != "asset_permission_denied" {
+		t.Errorf("drop reason = %q, want %q", drop.Reason, "asset_permission_denied")
+	}
+	if len(fc.created) != 0 {
+		t.Errorf("createFinding calls = %d, want 0 (dropped)", len(fc.created))
+	}
+
+	// The asset-search denial must log the instance id and must NOT log org_id:
+	// that pair distinguishes this branch from the org/source denial handler,
+	// which logs org_id instead. Asserting org_id's absence keeps the two
+	// permission-denied paths distinguishable even if both were to log
+	// instance_id in future.
+	if instanceID, ok := h.attrValue("instance_id"); !ok || instanceID != "9876543210" {
+		t.Errorf("logged instance_id = %q (present=%v), want %q", instanceID, ok, "9876543210")
+	}
+	if _, ok := h.attrValue("org_id"); ok {
+		t.Error("asset-search denial warning unexpectedly logged org_id; it must be routed through the compute permission-denied path in Process, not the org/source handler")
+	}
+}
+
 func TestProcessEnrichmentErrorReturned(t *testing.T) {
 	t.Parallel()
 
@@ -295,7 +361,7 @@ func TestProcessEnrichmentErrorReturned(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{},
 		&fakeSourceClient{},
-		&fakeAssetLister{},
+		&fakeResolver{},
 		&recordingFindingClient{},
 	)
 
@@ -312,7 +378,7 @@ func TestProcessOrgErrorReturned(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{err: boom},
 		&fakeSourceClient{},
-		&fakeAssetLister{},
+		&fakeResolver{},
 		&recordingFindingClient{},
 	)
 
@@ -329,7 +395,7 @@ func TestProcessAssetErrorReturned(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{byProj: map[string]string{"111111111": "42"}},
 		&fakeSourceClient{existing: map[string]string{"42": "organizations/42/sources/fig"}},
-		&fakeAssetLister{err: boom},
+		&fakeResolver{err: boom},
 		&recordingFindingClient{},
 	)
 
@@ -347,7 +413,7 @@ func TestProcessSubmitErrorReturned(t *testing.T) {
 	rt := newProcessRuntime(
 		&fakeOrgResolver{byProj: map[string]string{"111111111": "42"}},
 		&fakeSourceClient{existing: map[string]string{"42": "organizations/42/sources/fig"}},
-		&fakeAssetLister{names: []string{"//compute.googleapis.com/projects/p/zones/z/instances/i"}},
+		&fakeResolver{names: []string{"//compute.googleapis.com/projects/p/zones/z/instances/i"}},
 		fc,
 	)
 
