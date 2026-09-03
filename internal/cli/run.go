@@ -38,7 +38,6 @@ import (
 	"github.com/crowdstrike/falcon-integration-gateway/internal/events"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/client"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/falcon/stream"
-	"github.com/crowdstrike/falcon-integration-gateway/internal/logging"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/metrics"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/offset"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/pipeline"
@@ -65,7 +64,7 @@ const metricsShutdownTimeout = 5 * time.Second
 // flushes the offset store, then Run returns. stop() then restores the runtime's
 // default signal handling so a second signal hard-exits the process (130 for
 // SIGINT, 143 for SIGTERM), the operator's escape hatch if a backend hangs.
-func Run(ctx context.Context, cfg *config.Config) error {
+func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 	if cfg == nil {
 		return errors.New("app: nil config")
 	}
@@ -77,7 +76,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		stop()
 	}()
 
-	logger := logging.New(cfg.Logging.Level)
 	logger.Info("starting Falcon Integration Gateway",
 		"version", version.Version,
 		"commit", version.Commit,

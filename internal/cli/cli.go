@@ -1,8 +1,8 @@
 // Package cli builds the fig command-line interface: a root command that runs
-// the daemon and a version subcommand. It registers a flag for every config
-// setting and binds them into config resolution (flag > env > file > default
-// precedence) and hands the resolved, validated config to Run, which wires up
-// and drives the daemon (see run.go).
+// the daemon. It registers a flag for every config setting and binds them into
+// config resolution (flag > env > file > default precedence). A persistent
+// pre-run resolves and validates config and constructs the logger; RunE then
+// hands both to Run, which wires up and drives the daemon (see run.go).
 //
 // The cobra command tree keeps main.go a single Execute call so the Makefile
 // (`go run ./cmd/fig/main.go`) and goreleaser (`main: ./cmd/fig/main.go`) still
@@ -12,11 +12,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/logging"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/version"
 )
 
@@ -37,22 +39,30 @@ func Execute(ctx context.Context) error {
 // file rather than a viper key), and every config setting is registered as a
 // local flag so any of them can be overridden on the command line.
 func newRootCmd() *cobra.Command {
-	var configPath string
+	var (
+		configPath string
+		cfg        *config.Config
+		logger     *slog.Logger
+	)
 
 	rootCmd := &cobra.Command{
 		Use:     progName,
 		Short:   "Falcon Integration Gateway",
 		Long:    "Falcon Integration Gateway streams CrowdStrike Falcon events to third-party backends.",
 		Version: cliVersion,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadConfig(configPath, cmd.Flags())
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			var err error
+			cfg, err = loadConfig(configPath, cmd.Flags())
 			if err != nil {
 				return err
 			}
-
+			logger = logging.New(cfg.Logging.Level)
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceErrors = true
 			cmd.SilenceUsage = true
-			return Run(cmd.Context(), cfg)
+			return Run(cmd.Context(), cfg, logger)
 		},
 	}
 
@@ -60,15 +70,13 @@ func newRootCmd() *cobra.Command {
 	groups := config.RegisterFlags(rootCmd.Flags())
 	setGroupedHelp(rootCmd, groups)
 
-	rootCmd.AddCommand(newVersionCmd())
 	return rootCmd
 }
 
 // setGroupedHelp overrides the root command's usage/help output so flags print
 // under their group headings instead of one flat, alphabetized list. Cobra
 // inherits these funcs down to subcommands, so an identity check falls back to
-// cobra's stock rendering for anything other than root (e.g. keeping
-// `fig version --help` unchanged).
+// cobra's stock rendering for any command other than root.
 func setGroupedHelp(root *cobra.Command, groups []config.NamedFlagSet) {
 	defaultUsage := root.UsageFunc()
 	defaultHelp := root.HelpFunc()
@@ -155,16 +163,4 @@ func loadConfig(configPath string, flags *pflag.FlagSet) (*config.Config, error)
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	return cfg, nil
-}
-
-// newVersionCmd prints the ldflags-stamped version and commit.
-func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "version",
-		Short: "Print the version and build commit",
-		Args:  cobra.NoArgs,
-		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Println(cliVersion)
-		},
-	}
 }

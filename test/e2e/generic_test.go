@@ -10,6 +10,7 @@ import (
 
 	"github.com/crowdstrike/falcon-integration-gateway/internal/cli"
 	"github.com/crowdstrike/falcon-integration-gateway/internal/config"
+	"github.com/crowdstrike/falcon-integration-gateway/internal/logging"
 )
 
 // liveRunWindow is how long the daemon is left streaming before the test
@@ -41,7 +42,7 @@ var _ = Describe("GENERIC backend against a live tenant", Label("live"), func() 
 		// Run blocks until the context deadline cancels it; a graceful shutdown
 		// returns nil.
 		done := make(chan error, 1)
-		go func() { done <- cli.Run(ctx, cfg) }()
+		go func() { done <- cli.Run(ctx, cfg, logging.New(cfg.Logging.Level)) }()
 
 		select {
 		case err := <-done:
