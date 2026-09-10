@@ -417,9 +417,11 @@ func TestValidateCloudRegions(t *testing.T) {
 		{"eu-1", false},
 		{"us-gov-1", false},
 		{"us-gov-2", false},
-		{"", true},
+		{"gov1", false},
+		{"gov2", false},
+		{"", false},     // empty is accepted as autodiscover by falcon.CloudValidate
+		{"US-1", false}, // falcon.CloudValidate normalizes case and dashes
 		{"mars-1", true},
-		{"US-1", true}, // case-sensitive; gofalcon normalizes but validation does not
 	}
 	for _, tt := range tests {
 		t.Run(tt.region, func(t *testing.T) {

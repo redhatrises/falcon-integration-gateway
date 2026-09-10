@@ -17,8 +17,6 @@ var (
 	// cycle; keep it in sync with backend.Names().
 	validBackendNames = []string{"AWS", "AWS_SQS", "AZURE", "GCP", "WORKSPACEONE", "CLOUDTRAIL_LAKE", "GENERIC"}
 
-	validCloudRegions = []string{"autodiscover", "us-1", "us-2", "us-3", "eu-1", "us-gov-1", "us-gov-2"}
-
 	sensorRecognizedClouds = []string{"AWS", "Azure", "GCP", "unrecognized"}
 )
 
@@ -77,8 +75,8 @@ func (c *Config) validateFalcon() []error {
 	if c.Falcon.ReconnectRetryCount < 1 || c.Falcon.ReconnectRetryCount > 9999 {
 		errs = append(errs, malformedf("expected reconnect_retry_count to be in range 1-9999"))
 	}
-	if !slices.Contains(validCloudRegions, c.Falcon.CloudRegion) {
-		errs = append(errs, malformedf("expected cloud to be one of %s, got %q", strings.Join(validCloudRegions, ", "), c.Falcon.CloudRegion))
+	if _, err := falcon.CloudValidate(c.Falcon.CloudRegion); err != nil {
+		errs = append(errs, malformedf("expected cloud to be a valid Falcon cloud region: %w", err))
 	}
 	return errs
 }
@@ -218,9 +216,9 @@ func (c *Config) validateAzure() []error {
 }
 
 // FalconCloud maps the configured cloud region string to the gofalcon
-// CloudType. Validate() has already constrained cloud to one of the supported
-// regions; falcon.Cloud parses the same strings and falls back to us-1 for
-// anything unrecognized.
+// CloudType. Validate() has already accepted cloud via falcon.CloudValidate;
+// falcon.Cloud parses the same strings and falls back to us-1 for anything
+// unrecognized.
 func (c *Config) FalconCloud() falcon.CloudType {
 	return falcon.Cloud(c.Falcon.CloudRegion)
 }
