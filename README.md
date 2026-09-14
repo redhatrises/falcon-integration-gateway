@@ -64,13 +64,13 @@ FIG supports auto-discovery of the Falcon cloud region. If you do not specify a 
 > [!NOTE]
 > This method is not recommended for production deployments.
 
-You can use a `config.ini` file to store your API client ID and client secret. By default FIG searches for a config file in `/etc/fig` and then the current directory, or you can point at one explicitly with the `--config` flag. To configure authentication, add the following to the `config.ini` file:
+You can use a `config.yaml` file to store your API client ID and client secret. By default FIG searches for a config file in `/etc/fig` and then the current directory, or you can point at one explicitly with the `--config` flag. To configure authentication, add the following to the `config.yaml` file:
 
-```ini
-[falcon]
-cloud = us-1
-client_id = YOUR_CLIENT_ID
-client_secret = YOUR_CLIENT_SECRET
+```yaml
+falcon:
+  cloud: us-1
+  client_id: YOUR_CLIENT_ID
+  client_secret: YOUR_CLIENT_SECRET
 ```
 
 ### Environment Variables
@@ -93,24 +93,24 @@ You can use a credential store to securely store your API client ID and client s
 > [!NOTE]
 > You can use either direct configuration or environment variables to specify the credential store and its associated configurations.
 
-To configure FIG to use a credential store, add the following to the `config.ini` file:
+To configure FIG to use a credential store, add the following to the `config.yaml` file:
 
-```ini
-[falcon]
-cloud = us-1
+```yaml
+falcon:
+  cloud: us-1
 
-[credentials_store]
-#store = ssm|secrets_manager
+credentials_store:
+  #store: ssm|secrets_manager
 ```
 
-After selecting a credential store, you must provide the necessary configuration for the store. For example, to use AWS Secrets Manager, add the following to the `config.ini` file:
+After selecting a credential store, you must provide the necessary configuration for the store. For example, to use AWS Secrets Manager, add the following to the `config.yaml` file:
 
-```ini
-[secrets_manager]
-region = YOUR_AWS_REGION
-secrets_manager_secret_name = your/secret/name
-secrets_manager_client_id_key = client_id_key_name
-secrets_manager_client_secret_key = client_secret_key_name
+```yaml
+secrets_manager:
+  region: YOUR_AWS_REGION
+  secrets_manager_secret_name: your/secret/name
+  secrets_manager_client_id_key: client_id_key_name
+  secrets_manager_client_secret_key: client_secret_key_name
 ```
 
 ## Configuration
@@ -118,18 +118,18 @@ secrets_manager_client_secret_key = client_secret_key_name
 Configuration is layered and resolved once at startup, from lowest to highest precedence:
 
 1. **Built-in defaults** (compiled into the binary — no file required)
-2. **An optional config file** (`config.ini`) found on the search path or supplied with `--config`
+2. **An optional config file** (`config.yaml`) found on the search path or supplied with `--config`
 3. **Environment variables**
 4. **CLI flags** (highest precedence)
 
 In addition, a configured **credential store** (`ssm` or `secrets_manager`) overrides `falcon.client_id` / `falcon.client_secret` after the layers above are resolved.
 
-Running with no config file at all is valid — pure defaults plus environment variables. The config file may be INI, JSON, TOML, or YAML; the file extension selects the format.
+Running with no config file at all is valid — pure defaults plus environment variables. The config file may be YAML, JSON, TOML, or INI; the file extension selects the format.
 
-Please refer to the [config.ini](./config/config.ini) file for the full list of available options along with their respective environment variables.
+Please refer to the [config.yaml](./config/config.yaml) file for the full list of available options along with their respective environment variables.
 
 > [!NOTE]
-> The top-level section in `config.ini` is `[gateway]` — it holds `backends`, `worker_threads`, and the other gateway-wide settings. Earlier Python-based releases named this section `[main]`. When migrating an old config file, rename `[main]` to `[gateway]`; otherwise those settings are silently ignored and the built-in defaults apply.
+> The top-level key in `config.yaml` is `gateway` — it holds `backends`, `worker_threads`, and the other gateway-wide settings. Earlier Python-based releases used an INI file whose equivalent section was named `[main]`. When migrating an old INI config, move those settings under a `gateway` mapping (INI `[main]` → YAML `gateway:`); otherwise they are silently ignored and the built-in defaults apply.
 
 The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.level`, and `fig version` prints the build version and commit.
 
@@ -155,7 +155,7 @@ The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.lev
 
 ### Deployment Options
 
-> :exclamation: Prior to any deployment, ensure you refer to the [configuration options](./config/config.ini) available to the application :exclamation:
+> :exclamation: Prior to any deployment, ensure you refer to the [configuration options](./config/config.yaml) available to the application :exclamation:
 
 #### Installation to Kubernetes using the helm chart
 
@@ -171,7 +171,7 @@ To install as a container:
     docker pull quay.io/crowdstrike/falcon-integration-gateway:latest
     ```
 
-1. Run the application in the background passing in your backend [CONFIG](./config/config.ini) options as environment variables
+1. Run the application in the background passing in your backend [CONFIG](./config/config.yaml) options as environment variables
 
     ```bash
     docker run -d --rm \
@@ -232,7 +232,7 @@ To update, re-run the `go install` command above with `@latest` (or a specific `
 
     This produces a `fig` binary in the repository root. (`make run` builds and runs it in one step, and `make help` lists all available targets.)
 
-1. Configure the application by setting the associated environment variables, or copy the sample `config/config.ini` and pass it with `--config` (e.g. `./fig --config config/config.ini`).
+1. Configure the application by setting the associated environment variables, or copy the sample `config/config.yaml` and pass it with `--config` (e.g. `./fig --config config/config.yaml`).
 
 1. Run the application:
 

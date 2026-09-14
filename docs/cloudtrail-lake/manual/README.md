@@ -20,7 +20,7 @@ export FIG_BACKENDS="CLOUDTRAIL_LAKE"
 
 ## Deployment
 Using Docker in these examples, you can deploy the FIG as such:
-> Refer to the [config.ini](https://github.com/CrowdStrike/falcon-integration-gateway/blob/main/config/config.ini) for
+> Refer to the [config.yaml](https://github.com/CrowdStrike/falcon-integration-gateway/blob/main/config/config.yaml) for
   more configuration options along with their respective ENV variable
 #### In the example below, we are passing in our ~/.aws directory as our AWS credentials
 ```bash

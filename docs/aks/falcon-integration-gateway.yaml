@@ -72,63 +72,63 @@ kind: ConfigMap
 metadata:
   name: falcon-integration-gateway-config
 data:
-  config.ini: |
+  config.yaml: |
     # Falcon Integration Gateway
 
-    [gateway]
-    # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
-    backends=AZURE
+    gateway:
+      # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
+      backends: AZURE
 
-    # Uncomment to configure number of threads that process Falcon Events
-    # worker_threads = 4
+      # Uncomment to configure number of threads that process Falcon Events
+      # worker_threads: 4
 
-    [events]
-    # Uncomment to filter out events based on severity (allowed values 1-5, default 2)
-    # severity_threshold = 3
+    events:
+      # Uncomment to filter out events based on severity (allowed values 1-5, default 2)
+      # severity_threshold: 3
 
-    # Uncomment to filter out events based on number of days past the event (default 21)
-    #older_than_days_threshold = 14
+      # Uncomment to filter out events based on number of days past the event (default 21)
+      #older_than_days_threshold: 14
 
-    # Exclude events originating from certain cloud environments (AWS, Azure, GCP, or unrecognized)
-    # detections_exclude_clouds =
+      # Exclude events originating from certain cloud environments (AWS, Azure, GCP, or unrecognized)
+      # detections_exclude_clouds: ""
 
-    [logging]
-    # Uncomment to request logging level (ERROR, WARN, INFO, DEBUG)
-    #level = DEBUG
+    logging:
+      # Uncomment to request logging level (ERROR, WARN, INFO, DEBUG)
+      #level: DEBUG
 
-    [falcon]
-    # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable.
-    #cloud = us-1
+    falcon:
+      # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable.
+      #cloud: us-1
 
-    # Uncomment to provide OAuth Secret. Alternatively, use FALCON_CLIENT_SECRET env variable.
-    #client_id = ABCD
+      # Uncomment to provide OAuth Secret. Alternatively, use FALCON_CLIENT_SECRET env variable.
+      #client_id: ABCD
 
-    # Uncomment to provide OAuth Secret. Alternatively, use FALCON_CLIENT_SECRET env variable.
-    #client_secret = ABCD
+      # Uncomment to provide OAuth Secret. Alternatively, use FALCON_CLIENT_SECRET env variable.
+      #client_secret: ABCD
 
-    # Uncomment to provide application id. Needs to be different per each fig instance.
-    #application_id = my-acme-azure-1
+      # Uncomment to provide application id. Needs to be different per each fig instance.
+      #application_id: my-acme-azure-1
 
-    [azure]
-    # Azure section is applicable only when AZURE backend is enabled in the [gateway] section.
+    azure:
+      # Azure section is applicable only when AZURE backend is enabled in the gateway section.
 
-    # Uncomment to provide Azure Workspace ID. Alternatively, use WORKSPACE_ID env variable.
-    #workspace_id =
-    # Uncomment to provide Azure Primary Key. Alternatively, use PRIMARY_KEY env variable.
-    #primary_key =
+      # Uncomment to provide Azure Workspace ID. Alternatively, use WORKSPACE_ID env variable.
+      #workspace_id: ""
+      # Uncomment to provide Azure Primary Key. Alternatively, use PRIMARY_KEY env variable.
+      #primary_key: ""
 
-    # Authentication method: workload_identity | client_secret | legacy (deprecated)
-    auth_method = workload_identity
+      # Authentication method: workload_identity | client_secret | legacy (deprecated)
+      auth_method: workload_identity
 
-    # DCR logs ingestion endpoint (from the DCR overview in Azure portal, JSON view)
-    #dcr_endpoint = REPLACE_ME_WITH_DCR_ENDPOINT
+      # DCR logs ingestion endpoint (from the DCR overview in Azure portal, JSON view)
+      #dcr_endpoint: REPLACE_ME_WITH_DCR_ENDPOINT
 
-    # DCR immutable ID (from the DCR overview in Azure portal, JSON view)
-    #dcr_immutable_id = REPLACE_ME_WITH_DCR_IMMUTABLE_ID
+      # DCR immutable ID (from the DCR overview in Azure portal, JSON view)
+      #dcr_immutable_id: REPLACE_ME_WITH_DCR_IMMUTABLE_ID
 
-    # Uncomment to enable RTR based auto discovery of Azure Arc Systems. Alternatively,
-    # use ARC_AUTODISCOVERY env variable.
-    #arc_autodiscovery = true
+      # Uncomment to enable RTR based auto discovery of Azure Arc Systems. Alternatively,
+      # use ARC_AUTODISCOVERY env variable.
+      #arc_autodiscovery: true
 
 ---
 apiVersion: apps/v1
@@ -154,8 +154,8 @@ spec:
             imagePullPolicy: Always
             volumeMounts:
               - name: config-volume
-                mountPath: /etc/fig/config.ini
-                subPath: config.ini
+                mountPath: /etc/fig/config.yaml
+                subPath: config.yaml
             env:
               - name: FALCON_CLIENT_ID
                 valueFrom:
@@ -183,6 +183,6 @@ spec:
             configMap:
               name: falcon-integration-gateway-config
               items:
-              - key: config.ini
-                path: config.ini
+              - key: config.yaml
+                path: config.yaml
 

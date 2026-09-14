@@ -89,10 +89,10 @@ the config's valid-backend set. A test asserts the config set matches `backend.N
 Building FIG from source requires **Go 1.26 or later** (see [go.mod](../go.mod)). Running a
 prebuilt binary or the container image has no such requirement.
 
-Configuration is layered (defaults → config file → env → flags). The top-level section in a
-`config.ini` is `[gateway]` (it holds `backends`, `worker_threads`, and the other gateway-wide
-settings); it was named `[main]` in earlier Python-based releases, so rename `[main]` to `[gateway]`
-when migrating an old config file or those settings are silently ignored.
+Configuration is layered (defaults → config file → env → flags). The top-level key in a
+`config.yaml` is `gateway` (it holds `backends`, `worker_threads`, and the other gateway-wide
+settings); the equivalent section was named `[main]` in earlier Python-based INI releases, so move
+those settings under a `gateway` mapping when migrating an old INI config or they are silently ignored.
 
 ### Local workflow
 

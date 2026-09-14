@@ -111,55 +111,55 @@ file.
     eks.amazonaws.com/role-arn: <IAM_ROLE_ARN>
   ```
   ##### ConfigMap Updates:
-  Uncomment the following variables in the `config.ini` ConfigMap:
-  > For more information about configuration options, refer to the FIG [config.ini](../../../config/config.ini).
+  Uncomment the following variables in the `config.yaml` ConfigMap:
+  > For more information about configuration options, refer to the FIG [config.yaml](../../../config/config.yaml).
 
-  `channel_arn =` should be set to your provided CloudTrail Lake Channel ARN
+  `channel_arn:` should be set to your provided CloudTrail Lake Channel ARN
 
-  `region =` should be set to your AWS region where you setup the CloudTrail Lake Channel
+  `region:` should be set to your AWS region where you setup the CloudTrail Lake Channel
 
-  `application_id =` should be set to something unique.
+  `application_id:` should be set to something unique.
   > :exclamation: Running multiple FIG instances with the same `application_id` can cause issues.
 
   See the below example of config changes:
   <details open>
-    <summary>Example config.ini</summary>
+    <summary>Example config.yaml</summary>
 
-  ```bash
+  ```yaml
   # Falcon Integration Gateway
 
-  [gateway]
-  # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
-  backends=CLOUDTRAIL_LAKE
+  gateway:
+    # Cloud backends that are enabled. The gateway will push events to the cloud providers specified below
+    backends: CLOUDTRAIL_LAKE
 
-  # Uncomment to configure number of threads that process Falcon Events
-  #worker_threads = 4
+    # Uncomment to configure number of threads that process Falcon Events
+    #worker_threads: 4
 
-  [events]
-  # Uncomment to filter out events based on number of days past the event (default 21)
-  older_than_days_threshold = 14
+  events:
+    # Uncomment to filter out events based on number of days past the event (default 21)
+    older_than_days_threshold: 14
 
-  [logging]
-  # Uncomment to request logging level (ERROR, WARN, INFO, DEBUG)
-  #level = DEBUG
+  logging:
+    # Uncomment to request logging level (ERROR, WARN, INFO, DEBUG)
+    #level: DEBUG
 
-  [falcon]
-  # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable.
-  cloud = us-2
+  falcon:
+    # Uncomment to provide Falcon Cloud. Alternatively, use FALCON_CLOUD env variable.
+    cloud: us-2
 
-  # Uncomment to provide application id. Needs to be different per each fig instance.
-  # Alternatively, use FALCON_APPLICATION_ID env variable.
-  application_id = fig-int-1
+    # Uncomment to provide application id. Needs to be different per each fig instance.
+    # Alternatively, use FALCON_APPLICATION_ID env variable.
+    application_id: fig-int-1
 
-  [cloudtrail_lake]
-  # AWS CloudTrail Lake section is applicable only when CLOUDTRAIL_LAKE backend is enabled in the [gateway] section.
+  cloudtrail_lake:
+    # AWS CloudTrail Lake section is applicable only when CLOUDTRAIL_LAKE backend is enabled in the gateway section.
 
-  # Uncomment to provide the Channel ARN. Alternatively, use CLOUDTRAIL_LAKE_CHANNEL_ARN env variable.
-  channel_arn = arn:aws:cloudtrail:us-east-1:EXAMPLE:channel/EXAMPLE-9f94-471c-96ba-EXAMPLE
+    # Uncomment to provide the Channel ARN. Alternatively, use CLOUDTRAIL_LAKE_CHANNEL_ARN env variable.
+    channel_arn: arn:aws:cloudtrail:us-east-1:EXAMPLE:channel/EXAMPLE-9f94-471c-96ba-EXAMPLE
 
-  # Uncomment to provide the AWS region. Should match the same region as the Channel.
-  # Alternatively, use CLOUDTRAIL_LAKE_REGION env variable.
-  region = us-east-1
+    # Uncomment to provide the AWS region. Should match the same region as the Channel.
+    # Alternatively, use CLOUDTRAIL_LAKE_REGION env variable.
+    region: us-east-1
   ```
   </details>
 

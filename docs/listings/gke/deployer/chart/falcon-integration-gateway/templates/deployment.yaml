@@ -36,8 +36,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           volumeMounts:
             - name: config-volume
-              mountPath: /etc/fig/config.ini
-              subPath: config.ini
+              mountPath: /etc/fig/config.yaml
+              subPath: config.yaml
             - name: google-application-credentials
               mountPath: /google-application-credentials.json
               subPath: google-application-credentials.json
@@ -66,8 +66,8 @@ spec:
           configMap:
             name: {{ include "falcon-integration-gateway.fullname" . }}-config
             items:
-            - key: config.ini
-              path: config.ini
+            - key: config.yaml
+              path: config.yaml
         - name: google-application-credentials
           secret:
             secretName: {{ include "falcon-integration-gateway.fullname" . }}-creds

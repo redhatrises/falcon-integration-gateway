@@ -154,12 +154,12 @@ docker pull quay.io/crowdstrike/falcon-integration-gateway:latest
 #### 4.3 Configure and run the FIG
 
 Provide configuration as environment variables (recommended for containers), or mount a config
-file at `/etc/fig/config.ini`. Refer to the
-[configuration options](../../../config/config.ini) available to the application and backend.
+file at `/etc/fig/config.yaml`. Refer to the
+[configuration options](../../../config/config.yaml) available to the application and backend.
 
 > [!NOTE]
 > Instance existence confirmation can be disabled using the `confirm_instance` option in the
-> `[aws]` section of `config.ini`, or by setting the `AWS_CONFIRM_INSTANCE` environment variable.
+> `aws` section of `config.yaml`, or by setting the `AWS_CONFIRM_INSTANCE` environment variable.
 > This option is available for scenarios where the account that is running the service application
 > does not have access to the AWS account where the instance with the detection resides.
 
@@ -208,37 +208,37 @@ build with `make build`, which produces a `fig` binary in the repository root.
 
 #### 4.3 Configure the FIG
 
-There are two ways to configure the FIG to use the AWS backend: a `config.ini` file, or
-environment variables. Refer to the [configuration options](../../../config/config.ini)
+There are two ways to configure the FIG to use the AWS backend: a `config.yaml` file, or
+environment variables. Refer to the [configuration options](../../../config/config.yaml)
 available to the application and backend.
 
 > [!NOTE]
 > Instance existence confirmation can be disabled using the `confirm_instance` option in the
-> `[aws]` section of `config.ini`, or by setting the `AWS_CONFIRM_INSTANCE` environment variable.
+> `aws` section of `config.yaml`, or by setting the `AWS_CONFIRM_INSTANCE` environment variable.
 > This option is available for scenarios where the account that is running the service application
 > does not have access to the AWS account where the instance with the detection resides.
 
-##### 4.3.1 Configure the FIG using a `config.ini` file
+##### 4.3.1 Configure the FIG using a `config.yaml` file
 
-Create a `config.ini` file and set the following minimum values. By default FIG searches for a
+Create a `config.yaml` file and set the following minimum values. By default FIG searches for a
 config file in `/etc/fig` and the current directory, or you can point at one explicitly with the
 `--config` flag.
 
-```ini
-[gateway]
-backends = AWS
+```yaml
+gateway:
+  backends: AWS
 
-[events]
-severity_threshold = 3
+events:
+  severity_threshold: 3
 
-[falcon]
-cloud = <Falcon Cloud Region>
-client_id = <Falcon Client ID>
-client_secret = <Falcon Client Secret>
-application_id = <EXAMPLE-SECHUB-APPID>
+falcon:
+  cloud: <Falcon Cloud Region>
+  client_id: <Falcon Client ID>
+  client_secret: <Falcon Client Secret>
+  application_id: <EXAMPLE-SECHUB-APPID>
 
-[aws]
-region = <AWS Region>
+aws:
+  region: <AWS Region>
 ```
 
 ##### 4.3.2 Configure the FIG using environment variables
@@ -292,13 +292,13 @@ As events are processed by the FIG, they will be sent to Security Hub. You can v
 
 ## Troubleshooting
 
-To get additional logging verbosity, you can set the logging level to `DEBUG` by modifying either the `config.ini` or setting an environment variable.
+To get additional logging verbosity, you can set the logging level to `DEBUG` by modifying either the `config.yaml` or setting an environment variable.
 
-**Modify the `config.ini`:**
+**Modify the `config.yaml`:**
 
-```ini
-[logging]
-level = DEBUG
+```yaml
+logging:
+  level: DEBUG
 ```
 
 **Alternatively, set the environment variable:**
