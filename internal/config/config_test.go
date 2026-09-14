@@ -272,6 +272,37 @@ func TestValidateStartFromNewestXorOffset(t *testing.T) {
 	}
 }
 
+func TestValidateFalconCredentials(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(c *Config)
+		wantErr bool
+	}{
+		{"id and secret present", func(*Config) {}, false},
+		{"missing id", func(c *Config) { c.Falcon.ClientID = "" }, true},
+		{"missing secret", func(c *Config) { c.Falcon.ClientSecret = "" }, true},
+		{"missing both", func(c *Config) { c.Falcon.ClientID, c.Falcon.ClientSecret = "", "" }, true},
+		{"ssm store exempts direct creds", func(c *Config) {
+			c.Falcon.ClientID, c.Falcon.ClientSecret = "", ""
+			c.Credentials.Store = "ssm"
+			c.SSM = SSMConfig{Region: "us-east-1", SSMClientID: "/fig/id", SSMClientSecret: "/fig/secret"}
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validGenericConfig()
+			tt.mutate(cfg)
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateFullValidGenericPasses(t *testing.T) {
 	cfg := validGenericConfig()
 	if err := cfg.Validate(); err != nil {
@@ -513,6 +544,8 @@ func validGenericConfig() *Config {
 			CloudRegion:         "us-1",
 			ApplicationID:       "fig-default-app-id",
 			ReconnectRetryCount: 36,
+			ClientID:            "test-client-id",
+			ClientSecret:        "test-client-secret",
 		},
 		Generic:  GenericConfig{EventTypes: "ALL"},
 		Cache:    CacheConfig{Size: 8192, TTL: "1h"},

@@ -27,13 +27,6 @@ func ValidBackendNames() []string {
 	return append([]string(nil), validBackendNames...)
 }
 
-// malformedf builds a validation error carrying the standard
-// "malformed configuration: " prefix, so every site states only its specific
-// problem.
-func malformedf(format string, args ...any) error {
-	return fmt.Errorf("malformed configuration: "+format, args...)
-}
-
 // field is a named value checked by appendIfEmpty.
 type field struct{ name, val string }
 
@@ -58,7 +51,7 @@ func (c *Config) Validate() error {
 
 	// main
 	if c.Gateway.WorkerThreads < 1 || c.Gateway.WorkerThreads > 127 {
-		errs = append(errs, malformedf("expected worker_threads to be in range 1-127"))
+		errs = append(errs, errors.New("expected worker_threads to be in range 1-127"))
 	}
 
 	errs = append(errs, c.validateFalcon()...)
@@ -74,10 +67,19 @@ func (c *Config) Validate() error {
 func (c *Config) validateFalcon() []error {
 	var errs []error
 	if c.Falcon.ReconnectRetryCount < 1 || c.Falcon.ReconnectRetryCount > 9999 {
-		errs = append(errs, malformedf("expected reconnect_retry_count to be in range 1-9999"))
+		errs = append(errs, errors.New("expected reconnect_retry_count to be in range 1-9999"))
 	}
 	if _, err := falcon.CloudValidate(c.Falcon.CloudRegion); err != nil {
-		errs = append(errs, malformedf("expected cloud to be a valid Falcon cloud region: %w", err))
+		errs = append(errs, fmt.Errorf("expected cloud to be a valid Falcon cloud region: %w", err))
+	}
+	// The Falcon API needs a client ID and secret. A credential store supplies
+	// them in applyCredentialStore after this runs, so require them directly only
+	// when no store is configured; validateCredentialsStore covers the store case.
+	if c.Credentials.Store == "" {
+		errs = appendIfEmpty(errs,
+			func(name string) error { return fmt.Errorf("expected %s to be non-empty", name) },
+			field{"falcon.client_id", c.Falcon.ClientID},
+			field{"falcon.client_secret", c.Falcon.ClientSecret})
 	}
 	return errs
 }
@@ -89,32 +91,32 @@ func (c *Config) validateEvents() []error {
 
 	for _, cloud := range c.DetectionsExcludeClouds {
 		if !slices.Contains(sensorRecognizedClouds, cloud) {
-			errs = append(errs, malformedf("expected detections_exclude_clouds to be a subset of {%s}, got %q", strings.Join(sensorRecognizedClouds, ", "), cloud))
+			errs = append(errs, fmt.Errorf("expected detections_exclude_clouds to be a subset of {%s}, got %q", strings.Join(sensorRecognizedClouds, ", "), cloud))
 		}
 	}
 
 	if c.Events.SeverityThreshold < 1 || c.Events.SeverityThreshold > 5 {
-		errs = append(errs, malformedf("expected severity_threshold to be in range 1-5"))
+		errs = append(errs, errors.New("expected severity_threshold to be in range 1-5"))
 	}
 	if c.Events.OlderThanDaysThreshold < 0 || c.Events.OlderThanDaysThreshold > 9999 {
-		errs = append(errs, malformedf("expected older_than_days_threshold to be in range 0-9999"))
+		errs = append(errs, errors.New("expected older_than_days_threshold to be in range 0-9999"))
 	}
 
 	// start_from_newest XOR offset != 0.
 	if c.Events.StartFromNewest && c.Events.Offset != 0 {
-		errs = append(errs, malformedf("start_from_newest and offset are mutually exclusive. When start_from_newest is true, offset must be 0 (default)"))
+		errs = append(errs, errors.New("start_from_newest and offset are mutually exclusive. When start_from_newest is true, offset must be 0 (default)"))
 	}
 
 	switch strings.ToLower(strings.TrimSpace(c.Events.DeliveryFailure)) {
 	case "", "drop", "discard", "dlq", "block":
 	default:
-		errs = append(errs, malformedf("expected delivery_failure to be one of {drop, discard, block} (dlq is a deprecated alias for drop), got %q", c.Events.DeliveryFailure))
+		errs = append(errs, fmt.Errorf("expected delivery_failure to be one of {drop, discard, block} (dlq is a deprecated alias for drop), got %q", c.Events.DeliveryFailure))
 	}
 	if c.Events.PendingWarnThreshold < 0 {
-		errs = append(errs, malformedf("expected pending_warn_threshold to be >= 0 (0 disables), got %d", c.Events.PendingWarnThreshold))
+		errs = append(errs, fmt.Errorf("expected pending_warn_threshold to be >= 0 (0 disables), got %d", c.Events.PendingWarnThreshold))
 	}
 	if c.Events.PendingMax < 0 {
-		errs = append(errs, malformedf("expected pending_max to be >= 0 (0 disables), got %d", c.Events.PendingMax))
+		errs = append(errs, fmt.Errorf("expected pending_max to be >= 0 (0 disables), got %d", c.Events.PendingMax))
 	}
 
 	return errs
@@ -125,17 +127,17 @@ func (c *Config) validateBackends() []error {
 	var errs []error
 
 	if len(c.Backends) < 1 {
-		errs = append(errs, malformedf("expected backends to contain at least one backend"))
+		errs = append(errs, errors.New("expected backends to contain at least one backend"))
 	}
 	for _, b := range c.Backends {
 		if !slices.Contains(validBackendNames, b) {
-			errs = append(errs, malformedf("unrecognized backend %q; expected a subset of {%s}", b, strings.Join(validBackendNames, ", ")))
+			errs = append(errs, fmt.Errorf("unrecognized backend %q; expected a subset of {%s}", b, strings.Join(validBackendNames, ", ")))
 		}
 	}
 
 	// nonEmpty is the message builder for the per-backend "must be non-empty"
 	// checks in validate_backends().
-	nonEmpty := func(name string) error { return malformedf("expected %s to be non-empty", name) }
+	nonEmpty := func(name string) error { return fmt.Errorf("expected %s to be non-empty", name) }
 
 	if slices.Contains(c.Backends, "AWS") {
 		errs = appendIfEmpty(errs, nonEmpty, field{"AWS region", c.AWS.Region})
@@ -151,7 +153,7 @@ func (c *Config) validateBackends() []error {
 			field{"token", c.WorkspaceOne.Token},
 			field{"syslog_host", c.WorkspaceOne.SyslogHost})
 		if c.WorkspaceOne.SyslogPort < 1 || c.WorkspaceOne.SyslogPort > 65534 {
-			errs = append(errs, malformedf("expected syslog_port to be in range 1-65534"))
+			errs = append(errs, errors.New("expected syslog_port to be in range 1-65534"))
 		}
 	}
 	if slices.Contains(c.Backends, "CLOUDTRAIL_LAKE") {
@@ -174,7 +176,7 @@ func (c *Config) validateCredentialsStore() []error {
 	var errs []error
 
 	nonEmpty := func(name string) error {
-		return malformedf("%s must be non-empty when credentials_store is %q", name, c.Credentials.Store)
+		return fmt.Errorf("%s must be non-empty when credentials_store is %q", name, c.Credentials.Store)
 	}
 
 	switch c.Credentials.Store {
@@ -192,7 +194,7 @@ func (c *Config) validateCredentialsStore() []error {
 			field{"secrets_manager.secrets_manager_client_id_key", c.SecretsManager.SecretsManagerClientIDKey},
 			field{"secrets_manager.secrets_manager_client_secret_key", c.SecretsManager.SecretsManagerClientSecretKey})
 	default:
-		errs = append(errs, malformedf("expected credentials_store to be one of {ssm, secrets_manager} or empty, got %q", c.Credentials.Store))
+		errs = append(errs, fmt.Errorf("expected credentials_store to be one of {ssm, secrets_manager} or empty, got %q", c.Credentials.Store))
 	}
 
 	return errs
@@ -203,14 +205,14 @@ func (c *Config) validateCredentialsStore() []error {
 func (c *Config) validateCache() []error {
 	var errs []error
 	if c.Cache.Size < 1 || c.Cache.Size > 1_000_000 {
-		errs = append(errs, malformedf("expected size to be in range 1-1000000"))
+		errs = append(errs, errors.New("expected size to be in range 1-1000000"))
 	}
 	d, err := time.ParseDuration(c.Cache.TTL)
 	switch {
 	case err != nil:
-		errs = append(errs, malformedf("expected ttl to be a valid duration (e.g. 1h, 30m), got %q", c.Cache.TTL))
+		errs = append(errs, fmt.Errorf("expected ttl to be a valid duration (e.g. 1h, 30m), got %q", c.Cache.TTL))
 	case d < 0:
-		errs = append(errs, malformedf("expected ttl to be non-negative, got %q", c.Cache.TTL))
+		errs = append(errs, fmt.Errorf("expected ttl to be non-negative, got %q", c.Cache.TTL))
 	}
 	return errs
 }
@@ -221,13 +223,13 @@ func (c *Config) validateAzure() []error {
 	switch c.Azure.AuthMethod {
 	case "legacy":
 		errs = appendIfEmpty(errs,
-			func(name string) error { return malformedf("expected %s to be non-empty", name) },
+			func(name string) error { return fmt.Errorf("expected %s to be non-empty", name) },
 			field{"workspace_id", c.Azure.WorkspaceID},
 			field{"primary_key", c.Azure.PrimaryKey})
 	case "client_secret":
 		errs = appendIfEmpty(errs,
 			func(name string) error {
-				return malformedf("%s must be non-empty when auth_method is client_secret", name)
+				return fmt.Errorf("%s must be non-empty when auth_method is client_secret", name)
 			},
 			field{"tenant_id", c.Azure.TenantID},
 			field{"client_id", c.Azure.ClientID},
@@ -237,12 +239,12 @@ func (c *Config) validateAzure() []error {
 	case "workload_identity":
 		errs = appendIfEmpty(errs,
 			func(name string) error {
-				return malformedf("azure.%s must be non-empty when auth_method is workload_identity", name)
+				return fmt.Errorf("azure.%s must be non-empty when auth_method is workload_identity", name)
 			},
 			field{"dcr_endpoint", c.Azure.DCREndpoint},
 			field{"dcr_immutable_id", c.Azure.DCRImmutableID})
 	default:
-		errs = append(errs, malformedf("auth_method must be one of legacy, client_secret, workload_identity, got %q", c.Azure.AuthMethod))
+		errs = append(errs, fmt.Errorf("auth_method must be one of legacy, client_secret, workload_identity, got %q", c.Azure.AuthMethod))
 	}
 	// arc_autodiscovery is a typed bool; no string check needed.
 	return errs

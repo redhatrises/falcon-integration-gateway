@@ -89,7 +89,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	backends, err := backend.Build(cfg.Backends, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("app: build backends: %w", err)
+		return err
 	}
 
 	if err := applyCredentialStore(ctx, cfg, logger); err != nil {
@@ -98,12 +98,12 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 
 	falconClient, err := client.NewClient(ctx, cfg, logger)
 	if err != nil {
-		return fmt.Errorf("app: build falcon client: %w", err)
+		return err
 	}
 
 	enricher, err := enrich.New(enrich.Params{Config: cfg, Client: falconClient, Logger: logger})
 	if err != nil {
-		return fmt.Errorf("app: build enricher: %w", err)
+		return err
 	}
 
 	supervisor, err := stream.NewSupervisor(stream.SupervisorConfig{
@@ -117,7 +117,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		Logger:           logger,
 	})
 	if err != nil {
-		return fmt.Errorf("app: build stream supervisor: %w", err)
+		return err
 	}
 
 	pipe, err := pipeline.New(pipeline.Params{
@@ -128,7 +128,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		Logger:   logger,
 	})
 	if err != nil {
-		return fmt.Errorf("app: build pipeline: %w", err)
+		return err
 	}
 
 	return run(ctx, runComponents{
@@ -175,7 +175,7 @@ func run(ctx context.Context, c runComponents) error {
 	g.Go(func() error {
 		defer close(eventCh)
 		if err := c.supervisor.Run(gctx, eventCh); err != nil && !utils.IsCanceled(err) {
-			return fmt.Errorf("app: stream supervisor: %w", err)
+			return err
 		}
 		return nil
 	})
@@ -184,7 +184,7 @@ func run(ctx context.Context, c runComponents) error {
 	// this layer must not close it as well.
 	g.Go(func() error {
 		if err := c.pipe.Run(drainCtx, eventCh); err != nil {
-			return fmt.Errorf("app: pipeline: %w", err)
+			return err
 		}
 		return nil
 	})
@@ -246,17 +246,17 @@ func newOffsetStore(ctx context.Context, cfg *config.Config) (offset.Store, erro
 	case "ssm":
 		store, err := offset.NewSSM(ctx, cfg.Events.OffsetStoreRegion, cfg.Events.OffsetStorePath)
 		if err != nil {
-			return nil, fmt.Errorf("app: open offset store: %w", err)
+			return nil, err
 		}
 		return store, nil
 	case "", "file":
 		store, err := offset.NewFile(cfg.Events.OffsetStorePath)
 		if err != nil {
-			return nil, fmt.Errorf("app: open offset store: %w", err)
+			return nil, err
 		}
 		return store, nil
 	default:
-		return nil, fmt.Errorf("app: unknown offset_store %q (want file|memory|ssm)", cfg.Events.OffsetStore)
+		return nil, fmt.Errorf("unknown offset_store %q (want file|memory|ssm)", cfg.Events.OffsetStore)
 	}
 }
 
@@ -323,12 +323,12 @@ func serveMetrics(ctx context.Context, addr string, logger *slog.Logger) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("app: metrics server shutdown: %w", err)
+			return err
 		}
 		return nil
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("app: metrics server: %w", err)
+			return err
 		}
 		return nil
 	}
