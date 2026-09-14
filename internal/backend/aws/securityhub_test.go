@@ -867,3 +867,117 @@ func TestSecurityHubAccountIDNotLatchedOnError(t *testing.T) {
 		t.Errorf("AwsAccountId = %q, want 111122223333", awssdk.ToString(sh.imported[0].AwsAccountId))
 	}
 }
+
+func TestNetworkPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		fields map[string]any
+		want   *securityhubtypes.Network
+	}{
+		{
+			name:   "no NetworkAccesses yields nil",
+			fields: map[string]any{},
+			want:   nil,
+		},
+		{
+			name:   "empty NetworkAccesses yields nil",
+			fields: map[string]any{"NetworkAccesses": []any{}},
+			want:   nil,
+		},
+		{
+			name:   "access with no usable fields yields nil",
+			fields: map[string]any{"NetworkAccesses": []any{map[string]any{}}},
+			want:   nil,
+		},
+		{
+			name: "full access populates every subfield",
+			fields: map[string]any{"NetworkAccesses": []any{map[string]any{
+				"ConnectionDirection": float64(0),
+				"Protocol":            "TCP",
+				"LocalAddress":        "10.0.0.1",
+				"LocalPort":           float64(1234),
+				"RemoteAddress":       "8.8.8.8",
+				"RemotePort":          float64(443),
+			}}},
+			want: &securityhubtypes.Network{
+				Direction:       securityhubtypes.NetworkDirectionIn,
+				Protocol:        awssdk.String("TCP"),
+				SourceIpV4:      awssdk.String("10.0.0.1"),
+				SourcePort:      awssdk.Int32(1234),
+				DestinationIpV4: awssdk.String("8.8.8.8"),
+				DestinationPort: awssdk.Int32(443),
+			},
+		},
+		{
+			name: "missing subfields are omitted, not zero-valued",
+			fields: map[string]any{"NetworkAccesses": []any{map[string]any{
+				"Protocol":      "UDP",
+				"RemoteAddress": "1.1.1.1",
+			}}},
+			want: &securityhubtypes.Network{
+				Protocol:        awssdk.String("UDP"),
+				DestinationIpV4: awssdk.String("1.1.1.1"),
+			},
+		},
+		{
+			name: "zero port is omitted",
+			fields: map[string]any{"NetworkAccesses": []any{map[string]any{
+				"LocalAddress": "10.0.0.2",
+				"LocalPort":    float64(0),
+			}}},
+			want: &securityhubtypes.Network{
+				SourceIpV4: awssdk.String("10.0.0.2"),
+			},
+		},
+		{
+			name: "outbound direction when ConnectionDirection is non-zero",
+			fields: map[string]any{"NetworkAccesses": []any{map[string]any{
+				"ConnectionDirection": float64(1),
+			}}},
+			want: &securityhubtypes.Network{
+				Direction: securityhubtypes.NetworkDirectionOut,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := networkPayload(tt.fields)
+			switch {
+			case tt.want == nil:
+				if got != nil {
+					t.Fatalf("networkPayload() = %+v, want nil", got)
+				}
+				return
+			case got == nil:
+				t.Fatalf("networkPayload() = nil, want %+v", tt.want)
+			}
+			if got.Direction != tt.want.Direction {
+				t.Errorf("Direction = %q, want %q", got.Direction, tt.want.Direction)
+			}
+			if awssdk.ToString(got.Protocol) != awssdk.ToString(tt.want.Protocol) {
+				t.Errorf("Protocol = %q, want %q", awssdk.ToString(got.Protocol), awssdk.ToString(tt.want.Protocol))
+			}
+			if awssdk.ToString(got.SourceIpV4) != awssdk.ToString(tt.want.SourceIpV4) {
+				t.Errorf("SourceIpV4 = %q, want %q", awssdk.ToString(got.SourceIpV4), awssdk.ToString(tt.want.SourceIpV4))
+			}
+			if awssdk.ToString(got.DestinationIpV4) != awssdk.ToString(tt.want.DestinationIpV4) {
+				t.Errorf("DestinationIpV4 = %q, want %q", awssdk.ToString(got.DestinationIpV4), awssdk.ToString(tt.want.DestinationIpV4))
+			}
+			// Ports are omitted (nil pointer) rather than zero-valued when absent.
+			if (got.SourcePort == nil) != (tt.want.SourcePort == nil) {
+				t.Errorf("SourcePort set = %v, want set = %v", got.SourcePort != nil, tt.want.SourcePort != nil)
+			} else if awssdk.ToInt32(got.SourcePort) != awssdk.ToInt32(tt.want.SourcePort) {
+				t.Errorf("SourcePort = %d, want %d", awssdk.ToInt32(got.SourcePort), awssdk.ToInt32(tt.want.SourcePort))
+			}
+			if (got.DestinationPort == nil) != (tt.want.DestinationPort == nil) {
+				t.Errorf("DestinationPort set = %v, want set = %v", got.DestinationPort != nil, tt.want.DestinationPort != nil)
+			} else if awssdk.ToInt32(got.DestinationPort) != awssdk.ToInt32(tt.want.DestinationPort) {
+				t.Errorf("DestinationPort = %d, want %d", awssdk.ToInt32(got.DestinationPort), awssdk.ToInt32(tt.want.DestinationPort))
+			}
+		})
+	}
+}

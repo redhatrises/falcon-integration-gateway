@@ -140,10 +140,9 @@ func TestAWSRegionDualBind(t *testing.T) {
 	}
 }
 
-// TestFalconCloudRegionAlias verifies both the primary FALCON_CLOUD name and the
-// legacy FALCON_CLOUD_REGION alias bind to falcon.cloud, and that the primary
-// name wins when both are set.
-func TestFalconCloudRegionAlias(t *testing.T) {
+// TestFalconCloudEnvBinding verifies the primary FALCON_CLOUD name binds to
+// falcon.cloud and that the legacy FALCON_CLOUD_REGION name is no longer accepted.
+func TestFalconCloudEnvBinding(t *testing.T) {
 	t.Run("primary name", func(t *testing.T) {
 		chdir(t, t.TempDir())
 		t.Setenv("FALCON_CLOUD", "us-2")
@@ -156,28 +155,15 @@ func TestFalconCloudRegionAlias(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy alias", func(t *testing.T) {
+	t.Run("legacy name not bound", func(t *testing.T) {
 		chdir(t, t.TempDir())
 		t.Setenv("FALCON_CLOUD_REGION", "eu-1")
 		cfg, err := Load("", nil)
 		if err != nil {
 			t.Fatalf("Load() error: %v", err)
 		}
-		if cfg.Falcon.CloudRegion != "eu-1" {
-			t.Errorf("falcon.cloud = %q, want eu-1 (FALCON_CLOUD_REGION alias)", cfg.Falcon.CloudRegion)
-		}
-	})
-
-	t.Run("primary beats alias", func(t *testing.T) {
-		chdir(t, t.TempDir())
-		t.Setenv("FALCON_CLOUD", "us-1")
-		t.Setenv("FALCON_CLOUD_REGION", "us-2")
-		cfg, err := Load("", nil)
-		if err != nil {
-			t.Fatalf("Load() error: %v", err)
-		}
-		if cfg.Falcon.CloudRegion != "us-1" {
-			t.Errorf("falcon.cloud = %q, want us-1 (FALCON_CLOUD takes precedence)", cfg.Falcon.CloudRegion)
+		if cfg.Falcon.CloudRegion != "autodiscover" {
+			t.Errorf("falcon.cloud = %q, want autodiscover (FALCON_CLOUD_REGION must not bind)", cfg.Falcon.CloudRegion)
 		}
 	})
 }
@@ -394,6 +380,79 @@ func TestValidateCache(t *testing.T) {
 			cfg := validGenericConfig()
 			cfg.Cache.Size = tt.cacheSize
 			cfg.Cache.TTL = tt.cacheTTL
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatalf("expected validation error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateCredentialsStore(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{"empty store needs nothing", func(*Config) {}, false},
+		{
+			name: "ssm complete",
+			mutate: func(c *Config) {
+				c.Credentials.Store = "ssm"
+				c.SSM = SSMConfig{Region: "us-east-1", SSMClientID: "/fig/id", SSMClientSecret: "/fig/secret"}
+			},
+			wantErr: false,
+		},
+		{
+			name: "ssm missing region",
+			mutate: func(c *Config) {
+				c.Credentials.Store = "ssm"
+				c.SSM = SSMConfig{SSMClientID: "/fig/id", SSMClientSecret: "/fig/secret"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "ssm missing param names",
+			mutate: func(c *Config) {
+				c.Credentials.Store = "ssm"
+				c.SSM = SSMConfig{Region: "us-east-1"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "secrets_manager complete",
+			mutate: func(c *Config) {
+				c.Credentials.Store = "secrets_manager"
+				c.SecretsManager = SecretsManagerConfig{
+					Region:                        "us-east-1",
+					SecretsManagerSecretName:      "fig/creds",
+					SecretsManagerClientIDKey:     "client_id",
+					SecretsManagerClientSecretKey: "client_secret",
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "secrets_manager missing keys",
+			mutate: func(c *Config) {
+				c.Credentials.Store = "secrets_manager"
+				c.SecretsManager = SecretsManagerConfig{Region: "us-east-1", SecretsManagerSecretName: "fig/creds"}
+			},
+			wantErr: true,
+		},
+		{
+			name:    "unknown store",
+			mutate:  func(c *Config) { c.Credentials.Store = "vault" },
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validGenericConfig()
+			tt.mutate(cfg)
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatalf("expected validation error")

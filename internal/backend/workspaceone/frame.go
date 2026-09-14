@@ -24,10 +24,11 @@ type frameInput struct {
 
 // frame wraps a CEF payload in the exact wire framing the receiver expects: the
 // syslog PRI, a prefix (timestamp, logger name, left-justified thread name and
-// level), the CEF payload, and a trailing NUL. There is no newline and no length
-// prefix. This framing must not change, or the receiver will fail to parse it.
+// level), the CEF payload, and a trailing newline. The newline is the record
+// terminator (RFC 6587 non-transparent framing); there is no length prefix.
+// This framing must not change, or the receiver will fail to parse it.
 func frame(in frameInput) []byte {
 	record := fmt.Sprintf("%s ws1 %-10s %-8s %s",
 		in.now.Format(syslogTimeLayout), in.threadName, "INFO", in.cef)
-	return []byte(syslogPRI + record + "\x00")
+	return []byte(syslogPRI + record + "\n")
 }

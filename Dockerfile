@@ -1,6 +1,6 @@
 # Build stage — Red Hat Hardened Images Go toolchain embeds the validated
 # FIPS module in all binaries automatically.
-FROM registry.access.redhat.com/hi/go:1.26-fips AS builder
+FROM registry.access.redhat.com/hi/go:1.27-fips AS builder
 
 WORKDIR /src
 

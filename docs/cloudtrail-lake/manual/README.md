@@ -11,7 +11,7 @@ This guide provides a way to deploy the Falcon Integration Gateway from a contai
 ```bash
 export FALCON_CLIENT_ID=<your api falcon client id>
 export FALCON_CLIENT_SECRET=<your api falcon client secret>
-export FALCON_CLOUD_REGION=<your api falcon client region>
+export FALCON_CLOUD=<your api falcon client region>
 export CLOUDTRAIL_LAKE_CHANNEL_ARN=<your cloudtrail lake channel arn>
 export CLOUDTRAIL_LAKE_REGION=<your aws region aligning with channel>
 export FALCON_APPLICATION_ID=<your unique application stream identifier>
@@ -27,7 +27,7 @@ Using Docker in these examples, you can deploy the FIG as such:
 docker run -d --rm \
   -e FALCON_CLIENT_ID="$FALCON_CLIENT_ID" \
   -e FALCON_CLIENT_SECRET="$FALCON_CLIENT_SECRET" \
-  -e FALCON_CLOUD_REGION="$FALCON_CLOUD_REGION" \
+  -e FALCON_CLOUD="$FALCON_CLOUD" \
   -e FALCON_APPLICATION_ID="$FALCON_APPLICATION_ID" \
   -e FIG_BACKENDS="$FIG_BACKENDS" \
   -e CLOUDTRAIL_LAKE_CHANNEL_ARN="$CLOUDTRAIL_LAKE_CHANNEL_ARN" \
@@ -50,7 +50,7 @@ Then pass in those variables to Docker:
 docker run -d --rm \
   -e FALCON_CLIENT_ID="$FALCON_CLIENT_ID" \
   -e FALCON_CLIENT_SECRET="$FALCON_CLIENT_SECRET" \
-  -e FALCON_CLOUD_REGION="$FALCON_CLOUD_REGION" \
+  -e FALCON_CLOUD="$FALCON_CLOUD" \
   -e FALCON_APPLICATION_ID="$FALCON_APPLICATION_ID" \
   -e FIG_BACKENDS="$FIG_BACKENDS" \
   -e CLOUDTRAIL_LAKE_CHANNEL_ARN="$CLOUDTRAIL_LAKE_CHANNEL_ARN" \

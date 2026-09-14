@@ -39,8 +39,8 @@ type cefInput struct {
 // present-but-empty string is still emitted), values are never escaped, and the
 // field order is preserved exactly. The receiver relies on this exact framing,
 // so the order and no-escaping behavior must not change. The metadata fields
-// (cs4/cs1/cn3/rt) are always emitted: the identity fields are always populated
-// and the typed metadata is always present on the wire.
+// (cs4/cs1/cn3/rt) each carry a value-present guard so a labeled field is never
+// emitted with an empty or unset value.
 func buildCEF(in cefInput) string {
 	var b strings.Builder
 	b.WriteString(cefHeaderPrefix)
@@ -91,24 +91,33 @@ func buildCEF(in cefInput) string {
 		b.WriteString(" cs6Label=FalconHostLink")
 	}
 
-	// FalconEventId is the real detection id and FigDeduplicationId the dedup key;
-	// both are always populated, so cs4 and cs1 are emitted unconditionally. The
-	// detection id (DetectId/CompositeId) and the <feedID>_<offset> UID are both
-	// safe CEF-extension charsets that need no escaping.
-	b.WriteString(" cs4=")
-	b.WriteString(in.eventID)
-	b.WriteString(" cs4Label=FalconEventId")
-	b.WriteString(" cs1=")
-	b.WriteString(in.dedupKey)
-	b.WriteString(" cs1Label=FigDeduplicationId")
+	// FalconEventId is the real detection id and FigDeduplicationId the dedup key.
+	// Each field and its label are written together, and only when the value is
+	// present, so a bare label is never emitted. The detection id
+	// (DetectId/CompositeId) and the <feedID>_<offset> UID are both safe
+	// CEF-extension charsets that need no escaping.
+	if in.eventID != "" {
+		b.WriteString(" cs4=")
+		b.WriteString(in.eventID)
+		b.WriteString(" cs4Label=FalconEventId")
+	}
+	if in.dedupKey != "" {
+		b.WriteString(" cs1=")
+		b.WriteString(in.dedupKey)
+		b.WriteString(" cs1Label=FigDeduplicationId")
+	}
 
-	// Metadata is typed and always present, so cn3/rt are emitted unconditionally.
 	if in.ev != nil {
+		// Offset 0 is a valid first-record watermark, so cn3 is emitted whenever
+		// metadata is present. A zero EventCreationTime is unset (not epoch 1970),
+		// so rt is omitted rather than asserting a false timestamp.
 		b.WriteString(" cn3=")
 		b.WriteString(strconv.FormatUint(in.ev.Metadata.Offset, 10))
 		b.WriteString(" cn3Label=Offset")
-		b.WriteString(" rt=")
-		b.WriteString(strconv.FormatInt(in.ev.Metadata.EventCreationTime, 10))
+		if in.ev.Metadata.EventCreationTime != 0 {
+			b.WriteString(" rt=")
+			b.WriteString(strconv.FormatInt(in.ev.Metadata.EventCreationTime, 10))
+		}
 	}
 
 	field("src", "LocalIP")

@@ -89,6 +89,11 @@ the config's valid-backend set. A test asserts the config set matches `backend.N
 Building FIG from source requires **Go 1.26 or later** (see [go.mod](../go.mod)). Running a
 prebuilt binary or the container image has no such requirement.
 
+Configuration is layered (defaults → config file → env → flags). The top-level section in a
+`config.ini` is `[gateway]` (it holds `backends`, `worker_threads`, and the other gateway-wide
+settings); it was named `[main]` in earlier Python-based releases, so rename `[main]` to `[gateway]`
+when migrating an old config file or those settings are silently ignored.
+
 ### Local workflow
 
 ```bash
@@ -101,6 +106,8 @@ make help     # list all targets
 
 Run locally against a Falcon tenant with `FIG_BACKENDS=GENERIC`, which logs each processed
 event to stdout — the cheapest way to verify the end-to-end path without a real downstream.
+GENERIC logs identifying metadata at `INFO`; set `LOG_LEVEL=DEBUG` (or `--log-level DEBUG`) to
+also log the full raw event body.
 
 ### Container workflow
 
@@ -112,7 +119,7 @@ docker build . -t falcon-integration-gateway
 docker run -it --rm \
   -e FALCON_CLIENT_ID="$FALCON_CLIENT_ID" \
   -e FALCON_CLIENT_SECRET="$FALCON_CLIENT_SECRET" \
-  -e FALCON_CLOUD_REGION="us-1" \
+  -e FALCON_CLOUD="us-1" \
   -e FIG_BACKENDS=<BACKEND> \
   falcon-integration-gateway:latest
 ```

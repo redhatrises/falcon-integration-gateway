@@ -1,9 +1,11 @@
 package stream
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -161,6 +163,63 @@ func TestSeedFloorFunc_CommitErrorDoesNotMarkSeeded(t *testing.T) {
 	}
 	if got := store.Committed("feed-a"); len(got) != 1 || got[0] != 5 {
 		t.Fatalf("commits after retry = %v, want [5]", got)
+	}
+}
+
+// TestReadStream_OffsetSupersedeWarning proves the WARN fires only when a
+// persisted watermark overrides a pinned events.offset. A stored offset above a
+// non-zero ConfigOffset is a real supersede (the operator's resume point is
+// silently ignored); a stored offset at or below it, or an unset ConfigOffset,
+// is not.
+func TestReadStream_OffsetSupersedeWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		configOff   uint64
+		queueOff    uint64
+		wantWarning bool
+	}{
+		{name: "persisted offset above pinned offset warns", configOff: 50, queueOff: 100, wantWarning: true},
+		{name: "persisted offset below pinned offset does not warn", configOff: 50, queueOff: 30},
+		{name: "persisted offset equal to pinned offset does not warn", configOff: 50, queueOff: 50},
+		{name: "no pinned offset does not warn", configOff: 0, queueOff: 100},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintln(w, testutil.EventLine(testutil.EventOptions{EventType: "T", Offset: 1000}))
+			}))
+			defer srv.Close()
+
+			feedURL := srv.URL + "/sensors/entities/datafeed/v1/feedA?appId=fig"
+			store := testutil.NewRecordingStore()
+			store.LoadBase["feedA"] = tc.queueOff
+
+			var buf bytes.Buffer
+			s := &Supervisor{
+				cfg: SupervisorConfig{
+					Store:        store,
+					ConfigOffset: tc.configOff,
+					Logger:       slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+				},
+				httpClient: srv.Client(),
+				seeded:     map[string]bool{},
+			}
+
+			out := make(chan *events.Event, 1)
+			if err := s.readStream(context.Background(), testStream(feedURL, 1, 0), out); err != nil {
+				t.Fatalf("readStream: %v", err)
+			}
+
+			got := strings.Contains(buf.String(), "superseded by persisted watermark")
+			if got != tc.wantWarning {
+				t.Fatalf("supersede warning present = %v, want %v (log: %q)", got, tc.wantWarning, buf.String())
+			}
+		})
 	}
 }
 

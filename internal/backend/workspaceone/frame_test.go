@@ -17,17 +17,17 @@ func TestFrame(t *testing.T) {
 		want string
 	}{
 		{
-			name: "standard record: PRI, formatter prefix, padding, trailing NUL",
+			name: "standard record: PRI, formatter prefix, padding, trailing newline",
 			in:   frameInput{cef: "CEF:0|x", now: fixedNow, threadName: "fig"},
 			// "<14>" + "2026-08-14 12:30:45 ws1 " + threadName(width 10) + " " +
-			// "INFO"(width 8) + " " + cef + NUL.
+			// "INFO"(width 8) + " " + cef + newline.
 			want: "<14>2026-08-14 12:30:45 ws1 fig" + strings.Repeat(" ", 8) +
-				"INFO" + strings.Repeat(" ", 5) + "CEF:0|x\x00",
+				"INFO" + strings.Repeat(" ", 5) + "CEF:0|x\n",
 		},
 		{
 			name: "thread name longer than 10 is not truncated",
 			in:   frameInput{cef: "CEF:0|x", now: fixedNow, threadName: "verylongname"},
-			want: "<14>2026-08-14 12:30:45 ws1 verylongname INFO     CEF:0|x\x00",
+			want: "<14>2026-08-14 12:30:45 ws1 verylongname INFO     CEF:0|x\n",
 		},
 	}
 
@@ -42,11 +42,11 @@ func TestFrame(t *testing.T) {
 	}
 }
 
-func TestFrameEndsWithNUL(t *testing.T) {
+func TestFrameEndsWithNewline(t *testing.T) {
 	t.Parallel()
 	got := frame(frameInput{cef: "CEF:0|x", now: time.Unix(0, 0).UTC(), threadName: "fig"})
-	if len(got) == 0 || got[len(got)-1] != 0x00 {
-		t.Fatalf("frame() must end with a NUL byte, got %q", got)
+	if len(got) == 0 || got[len(got)-1] != '\n' {
+		t.Fatalf("frame() must end with a newline, got %q", got)
 	}
 	if !strings.HasPrefix(string(got), "<14>") {
 		t.Errorf("frame() must start with the syslog PRI <14>, got %q", got)

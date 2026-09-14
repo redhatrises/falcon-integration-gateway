@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Security-only: suppress routine version-bump PRs. Security-vulnerability
+    # PRs are exempt from this limit and are still opened.
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "chore"

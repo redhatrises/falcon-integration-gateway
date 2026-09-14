@@ -128,6 +128,9 @@ Running with no config file at all is valid — pure defaults plus environment v
 
 Please refer to the [config.ini](./config/config.ini) file for the full list of available options along with their respective environment variables.
 
+> [!NOTE]
+> The top-level section in `config.ini` is `[gateway]` — it holds `backends`, `worker_threads`, and the other gateway-wide settings. Earlier Python-based releases named this section `[main]`. When migrating an old config file, rename `[main]` to `[gateway]`; otherwise those settings are silently ignored and the built-in defaults apply.
+
 The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.level`, and `fig version` prints the build version and commit.
 
 ## Deployment
@@ -143,6 +146,12 @@ The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.lev
 | GCP | Pushes events to GCP Security Command Center | <ul><li>[Deployment to GKE](docs/listings/gke/UserGuide.md) (using [marketplace](https://console.cloud.google.com/marketplace/product/crowdstrike-saas/falcon-integration-gateway-scc))</li><li>[Deployment to GKE](docs/gke) (manual)</li></ul> |
 | Workspace ONE | Pushes events to VMware Workspace ONE Intelligence | *Coming Soon* |
 | Generic | Displays events to STDOUT (ideal for testing, debugging, and development) | N/A |
+
+> [!NOTE]
+> The GENERIC backend logs each event's identifying metadata at `INFO`; the full raw event body (which carries tenant data such as CID, source IPs, and API client IDs) is logged at `DEBUG`. Set `LOG_LEVEL=DEBUG` (or `--log-level DEBUG`) to see event bodies.
+
+> [!NOTE]
+> The GCP backend also requires the service account to hold `roles/compute.viewer` (in addition to `roles/securitycenter.admin`) so it can resolve the Compute Engine instance behind each detection for the Finding's resource name. Granting at the organization level covers every project that forwards findings; without it, affected detections are logged and dropped. See the [GKE deployment guide](docs/gke/README.md) for the exact grants.
 
 ### Deployment Options
 

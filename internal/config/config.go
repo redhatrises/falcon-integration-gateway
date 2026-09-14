@@ -363,26 +363,16 @@ func setDefaults(v *viper.Viper) {
 	}
 }
 
-// envAliases lists additional, lower-precedence environment variable names for a
-// key beyond its primary settings.Env. The Falcon cloud region is also set by the
-// shipped k8s and helm manifests as FALCON_CLOUD_REGION, so it is accepted
-// alongside the primary FALCON_CLOUD name.
-var envAliases = map[string][]string{
-	"falcon.cloud": {"FALCON_CLOUD_REGION"},
-}
-
 // bindEnv registers explicit per-key env bindings. Explicit binds (not
-// AutomaticEnv) preserve the exact env var names and the one-env->two-keys case.
-// When a key has aliases, all names are bound in a single BindEnv call because a
-// second call for the same key would replace the first; viper resolves them
-// first-match-wins, so the primary Env name takes precedence over any alias.
+// AutomaticEnv) preserve the exact env var names and the one-env->two-keys case
+// (two keys binding the same env var, e.g. aws.region and aws_sqs.region both
+// reading AWS_REGION).
 func bindEnv(v *viper.Viper) error {
 	for _, s := range settings {
 		if s.Env == "" {
 			continue
 		}
-		names := append([]string{s.Env}, envAliases[s.Key]...)
-		if err := v.BindEnv(append([]string{s.Key}, names...)...); err != nil {
+		if err := v.BindEnv(s.Key, s.Env); err != nil {
 			return err
 		}
 	}

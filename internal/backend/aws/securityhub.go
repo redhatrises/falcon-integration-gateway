@@ -477,7 +477,10 @@ func enhancedResourceDetails(host *common.HostDetails) map[string]string {
 }
 
 // networkPayload builds the ASFF Network object from the first NetworkAccesses
-// entry, or nil when the event carries no network access details.
+// entry, or nil when the event carries no network access details. Each subfield
+// is populated only when its source value is present, and the whole object is
+// omitted when nothing resolved, so a finding never carries empty network
+// placeholders.
 func networkPayload(fields map[string]any) *securityhubtypes.Network {
 	accesses, ok := fields["NetworkAccesses"].([]any)
 	if !ok || len(accesses) == 0 {
@@ -487,18 +490,42 @@ func networkPayload(fields map[string]any) *securityhubtypes.Network {
 	if !ok {
 		return nil
 	}
-	direction := securityhubtypes.NetworkDirectionOut
-	if utils.IntFromAny(na["ConnectionDirection"]) == 0 {
-		direction = securityhubtypes.NetworkDirectionIn
+
+	net := &securityhubtypes.Network{}
+	set := false
+
+	if raw, ok := na["ConnectionDirection"]; ok {
+		net.Direction = securityhubtypes.NetworkDirectionOut
+		if utils.IntFromAny(raw) == 0 {
+			net.Direction = securityhubtypes.NetworkDirectionIn
+		}
+		set = true
 	}
-	return &securityhubtypes.Network{
-		Direction:       direction,
-		Protocol:        awssdk.String(mapString(na, "Protocol")),
-		SourceIpV4:      awssdk.String(mapString(na, "LocalAddress")),
-		SourcePort:      awssdk.Int32(int32FromAny(na["LocalPort"])),
-		DestinationIpV4: awssdk.String(mapString(na, "RemoteAddress")),
-		DestinationPort: awssdk.Int32(int32FromAny(na["RemotePort"])),
+	if v := mapString(na, "Protocol"); v != "" {
+		net.Protocol = awssdk.String(v)
+		set = true
 	}
+	if v := mapString(na, "LocalAddress"); v != "" {
+		net.SourceIpV4 = awssdk.String(v)
+		set = true
+	}
+	if port := int32FromAny(na["LocalPort"]); port != 0 {
+		net.SourcePort = awssdk.Int32(port)
+		set = true
+	}
+	if v := mapString(na, "RemoteAddress"); v != "" {
+		net.DestinationIpV4 = awssdk.String(v)
+		set = true
+	}
+	if port := int32FromAny(na["RemotePort"]); port != 0 {
+		net.DestinationPort = awssdk.Int32(port)
+		set = true
+	}
+
+	if !set {
+		return nil
+	}
+	return net
 }
 
 // cloudAccountInfo renders the "| <provider> Account: <id>" suffix appended to

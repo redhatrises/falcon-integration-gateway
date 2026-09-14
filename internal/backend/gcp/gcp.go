@@ -64,8 +64,7 @@ func (r *Runtime) IsRelevant(ctx context.Context, ev *events.EnrichedEvent) bool
 // recorded. It chains the two per-event lookups — project number to enclosing
 // organization id, then organization id to the get-or-created FIG Source — both
 // memoized and concurrency-safe. The organization id is returned alongside the
-// source because the submitter deduplicates findings per organization; it is
-// also returned when the source lookup itself fails, so a permission-denied
+// source so that, when the source lookup itself fails, a permission-denied
 // warning can name the organization that must grant access.
 func (r *Runtime) resolveOrgSource(ctx context.Context, projectNumber string) (orgID, source string, err error) {
 	orgID, err = r.orgs.get(ctx, projectNumber)
@@ -82,7 +81,10 @@ func (r *Runtime) resolveOrgSource(ctx context.Context, projectNumber string) (o
 // Process forwards one detection to GCP Security Command Center as a Finding. It
 // resolves the host's GCP project number, walks to the enclosing organization
 // and its FIG Source, looks up the SCC resource name of the originating asset,
-// builds the Finding, and submits it (deduplicated per organization).
+// builds the Finding, and submits it. Duplicate submits are collapsed server-side
+// by the SCC Finding API, which is queried per Source for the finding's dedup id
+// before a create, so a retry or a cross-run repeat does not create a second
+// finding.
 //
 // Several conditions are a deliberate skip rather than a delivery failure, each
 // logging a warning and returning a backend.DropError so the pipeline records

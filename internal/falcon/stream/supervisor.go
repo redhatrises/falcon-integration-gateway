@@ -254,6 +254,14 @@ func (s *Supervisor) readStream(ctx context.Context, st client.Stream, out chan<
 
 	off, useWhence := resolveOffset(s.cfg.ConfigOffset, queueOffset, s.cfg.StartFromNewest)
 
+	// A persisted watermark ahead of a pinned events.offset wins, so the operator's
+	// chosen resume point is silently ignored. Warn so a stale or mistaken offset is
+	// not overridden without a trace.
+	if s.cfg.ConfigOffset > 0 && queueOffset > s.cfg.ConfigOffset {
+		s.cfg.Logger.Warn("configured events.offset superseded by persisted watermark; resuming from the stored offset",
+			"feed_id", feedID, "config_offset", s.cfg.ConfigOffset, "queue_offset", queueOffset)
+	}
+
 	conn := newConnection(connectionConfig{
 		url:         st.URL(),
 		token:       st.Token(),

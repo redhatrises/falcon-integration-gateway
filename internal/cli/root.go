@@ -66,7 +66,7 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
-	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "path to a config file (INI, JSON, TOML, or YAML; default: search /etc/fig, ./config, .)")
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "path to a config file")
 	groups := config.RegisterFlags(rootCmd.Flags())
 	setGroupedHelp(rootCmd, groups)
 

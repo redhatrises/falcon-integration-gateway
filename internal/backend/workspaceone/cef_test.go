@@ -74,7 +74,7 @@ func TestBuildCEF(t *testing.T) {
 				" CSMTRPatternDisposition=Prevention, process blocked.",
 		},
 		{
-			name: "sparse event omits absent keys but always emits metadata fields",
+			name: "empty eventID and zero creation time omit cs4 and rt; cs1 and cn3 remain",
 			in: cefInput{
 				token:    "t",
 				udid:     "u",
@@ -90,10 +90,29 @@ func TestBuildCEF(t *testing.T) {
 			want: cefHeader +
 				"Token=t UDID=u" +
 				" externalId=sensor-1" +
-				" cs4= cs4Label=FalconEventId" +
 				" cs1=feed1_0 cs1Label=FigDeduplicationId" +
-				" cn3=0 cn3Label=Offset" +
-				" rt=0",
+				" cn3=0 cn3Label=Offset",
+		},
+		{
+			name: "empty dedupKey omits cs1",
+			in: cefInput{
+				token:    "t",
+				udid:     "u",
+				eventID:  "ldt:abc:5",
+				dedupKey: "",
+				ev: &events.Event{
+					Metadata: events.Metadata{Offset: 5, EventCreationTime: 6},
+					Event: map[string]any{
+						"SensorId": "sensor-1",
+					},
+				},
+			},
+			want: cefHeader +
+				"Token=t UDID=u" +
+				" externalId=sensor-1" +
+				" cs4=ldt:abc:5 cs4Label=FalconEventId" +
+				" cn3=5 cn3Label=Offset" +
+				" rt=6",
 		},
 		{
 			name: "present-but-empty string is emitted (raw-map presence semantics)",
