@@ -126,12 +126,79 @@ In addition, a configured **credential store** (`ssm` or `secrets_manager`) over
 
 Running with no config file at all is valid — pure defaults plus environment variables. The config file may be YAML, JSON, TOML, or INI; the file extension selects the format.
 
-Please refer to the [config.yaml](./config/config.yaml) file for the full list of available options along with their respective environment variables.
+The `config/` directory ships a sample for each format — [config.yaml](./config/config.yaml), [config.json](./config/config.json), [config.toml](./config/config.toml), and [config.ini](./config/config.ini) — listing every option at its default alongside the matching environment variable. Copy the one whose format you prefer and pass it with `--config`, or let FIG auto-discover it by naming it `config.<ext>` in `/etc/fig` or the working directory.
+
+### Configuration file formats
+
+The examples below are equivalent — the same minimal config enabling the AWS Security Hub backend — expressed in each supported format.
+
+**YAML** (`config.yaml`):
+
+```yaml
+gateway:
+  backends: AWS
+
+falcon:
+  cloud: us-1
+  client_id: YOUR_CLIENT_ID
+  client_secret: YOUR_CLIENT_SECRET
+
+aws:
+  region: us-east-1
+```
+
+**JSON** (`config.json`):
+
+```json
+{
+  "gateway": {
+    "backends": "AWS"
+  },
+  "falcon": {
+    "cloud": "us-1",
+    "client_id": "YOUR_CLIENT_ID",
+    "client_secret": "YOUR_CLIENT_SECRET"
+  },
+  "aws": {
+    "region": "us-east-1"
+  }
+}
+```
+
+**TOML** (`config.toml`):
+
+```toml
+[gateway]
+backends = "AWS"
+
+[falcon]
+cloud = "us-1"
+client_id = "YOUR_CLIENT_ID"
+client_secret = "YOUR_CLIENT_SECRET"
+
+[aws]
+region = "us-east-1"
+```
+
+**INI** (`config.ini`):
+
+```ini
+[gateway]
+backends = AWS
+
+[falcon]
+cloud = us-1
+client_id = YOUR_CLIENT_ID
+client_secret = YOUR_CLIENT_SECRET
+
+[aws]
+region = us-east-1
+```
 
 > [!NOTE]
 > The top-level key in `config.yaml` is `gateway` — it holds `backends`, `worker_threads`, and the other gateway-wide settings. Earlier Python-based releases used an INI file whose equivalent section was named `[main]`. When migrating an old INI config, move those settings under a `gateway` mapping (INI `[main]` → YAML `gateway:`); otherwise they are silently ignored and the built-in defaults apply.
 
-The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.level`, and `fig version` prints the build version and commit.
+The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.level`, and `fig --version` prints the build version and commit.
 
 ## Deployment
 
