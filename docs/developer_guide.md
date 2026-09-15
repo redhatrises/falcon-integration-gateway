@@ -86,7 +86,7 @@ the config's valid-backend set. A test asserts the config set matches `backend.N
 
 ## Getting Started
 
-Building FIG from source requires **Go 1.26 or later** (see [go.mod](../go.mod)). Running a
+Building FIG from source requires **Go 1.27.1 or later** (see [go.mod](../go.mod)). Running a
 prebuilt binary or the container image has no such requirement.
 
 Configuration is layered (defaults → config file → env → flags). The top-level key in a

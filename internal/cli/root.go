@@ -57,6 +57,9 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			logger = logging.New(cfg.Logging.Level)
+			if cfg.ConfigFileUsed != "" {
+				logger.Info("loaded config file", "path", cfg.ConfigFileUsed)
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {

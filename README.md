@@ -34,7 +34,7 @@ FIG is a single, long-running Go binary (`fig`) that consumes the CrowdStrike Fa
 FIG is distributed as a single, statically linked Go binary and as a container image. To run it you only need CrowdStrike Falcon API credentials with the [scopes](#api-scopes) below — there is no language runtime to install.
 
 > [!IMPORTANT]
-> Building FIG from source requires **Go 1.26 or later** (see [go.mod](go.mod)). Running a prebuilt binary or the container image has no such requirement.
+> Building FIG from source requires **Go 1.27.1 or later** (see [go.mod](go.mod)). Running a prebuilt binary or the container image has no such requirement.
 
 ## API Scopes
 
@@ -82,6 +82,9 @@ export FALCON_CLOUD=us-1
 export FALCON_CLIENT_ID=YOUR_CLIENT_ID
 export FALCON_CLIENT_SECRET=YOUR_CLIENT_SECRET
 ```
+
+> [!NOTE]
+> The cloud region env var is `FALCON_CLOUD`. Earlier Python-based releases also honored `FALCON_CLOUD_REGION`; that name is no longer read and is silently ignored, so update any environment that still sets it.
 
 ### Credential Store
 
@@ -200,6 +203,16 @@ region = us-east-1
 
 The `--log-level` flag (`DEBUG`, `INFO`, `WARN`, `ERROR`) overrides `logging.level`, and `fig --version` prints the build version and commit.
 
+### Offset store (resume after restart)
+
+FIG tracks how far it has read each Falcon event feed so a restart resumes where it left off rather than replaying from the beginning. That resume watermark is kept in an **offset store**, selected by `events.offset_store` (env `EVENTS_OFFSET_STORE` is not bound; set it via config file or the `--offset-store` flag):
+
+- `file` (default) — persists a small JSON file, written atomically. The path is `events.offset_store_path`, default `/etc/fig/offsets.json`. The directory must be writable by the FIG process; FIG checks this at startup and fails fast if it is not. For a container or Kubernetes deployment, back this path with a persistent volume so the watermark survives pod restarts.
+- `ssm` — persists the watermark to an AWS SSM parameter. `events.offset_store_path` is the parameter name and `events.offset_store_region` is its AWS region (blank defers to the AWS credential/region chain).
+- `memory` — ephemeral, for tests only. Nothing is persisted, so every start replays from the configured/newest offset.
+
+Delivery is **at-least-once**: the watermark is flushed on a coalesced interval and on shutdown, so an abrupt crash re-delivers the events processed since the last durable flush. Backends must therefore be idempotent or dedupe on the key each event carries.
+
 ## Deployment
 
 ### Backends w/ Available Deployment Guide(s)
@@ -261,7 +274,7 @@ To install as a container:
 
 #### With `go install`
 
-If you have a Go toolchain (1.26+) installed, you can build and install the `fig` binary directly from the module:
+If you have a Go toolchain (1.27.1+) installed, you can build and install the `fig` binary directly from the module:
 
 ```bash
 go install github.com/crowdstrike/falcon-integration-gateway/cmd/fig@latest
@@ -282,7 +295,7 @@ To update, re-run the `go install` command above with `@latest` (or a specific `
 #### From Source
 
 > [!NOTE]
-> This method requires Go 1.26 or later.
+> This method requires Go 1.27.1 or later.
 
 1. Clone and navigate to the repository:
 

@@ -57,16 +57,20 @@ type BufferedStoreConfig struct {
 // The watermark is monotonic: a commit at or below a feed's current value is a
 // no-op that never persists, so a stale or out-of-order commit cannot regress
 // the resume floor. Because the watermark advances in memory immediately,
-// dedup within a running process is exact; only the durable write lags, bounded
-// by Interval and reconciled by the Close flush. BufferedStore is safe for
-// concurrent use.
+// dedup within a running process is exact; only the durable write lags. Interval
+// bounds how often that write runs, not how stale the last accepted commit may
+// be on disk: a commit within Interval of the previous flush stays in memory
+// until a later commit crosses the interval or Close flushes it. BufferedStore
+// is safe for concurrent use.
 //
 // This time coalescing is the second of the two crash-loss debounce layers on
 // the resume floor (the first is the pipeline commit tracker's in-order gate):
 // a commit accepted here advances the in-memory watermark but may not reach disk
-// for up to Interval, so an abrupt crash within that window re-delivers events
-// after the last persisted floor. Close's final flush collapses this layer on a
-// graceful shutdown.
+// immediately. Under a steady commit stream the lag is about Interval; when
+// commits go idle while dirty, the last accepted value stays in memory until the
+// next commit or Close, so the un-persisted window is not capped at Interval. An
+// abrupt crash re-delivers events after the last persisted floor (duplicates,
+// never loss). Close's final flush collapses this layer on a graceful shutdown.
 type BufferedStore struct {
 	interval time.Duration
 	persist  PersistFunc

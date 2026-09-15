@@ -78,7 +78,7 @@ Please consult GCP documentation below to understand the topic of marketplace li
     GCLOUD_CREDS=$(base64 < "gcp_service_account_for_fig.json")
     mpdev install \
       --deployer=$IMAGE:latest \
-      --parameters='{"name": "falcon-integration-gateway", "namespace": "test-ns", "falcon.cloud_region": "us-1", "falcon.client_id": "'${FALCON_CLIENT_ID}'", "falcon.client_secret": "'${FALCON_CLIENT_SECRET}'", "cloud.google.application_credentials": "'$GCLOUD_CREDS'" }'
+      --parameters='{"name": "falcon-integration-gateway", "namespace": "test-ns", "falcon.cloud": "us-1", "falcon.client_id": "'${FALCON_CLIENT_ID}'", "falcon.client_secret": "'${FALCON_CLIENT_SECRET}'", "cloud.google.application_credentials": "'$GCLOUD_CREDS'" }'
     ```
 
 - review the logs fo the fig, make sure it is up and working

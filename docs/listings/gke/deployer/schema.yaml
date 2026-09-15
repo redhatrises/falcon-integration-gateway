@@ -38,7 +38,7 @@ properties:
     x-google-marketplace:
       type: NAMESPACE
       default: falcon-gateway
-  falcon.cloud_region:
+  falcon.cloud:
     title: Falcon Cloud Region
     type: string
     x-google-marketplace:
@@ -76,7 +76,7 @@ required:
   - namespace
   - falcon.client_id
   - falcon.client_secret
-  - falcon.cloud_region
+  - falcon.cloud
   - cloud.google.application_credentials
 
 form:

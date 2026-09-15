@@ -63,13 +63,15 @@ type feedTracker struct {
 //  2. Time coalescing (offset.BufferedStore, behind store.Commit). Even once
 //     committed advances and store.Commit is called, the durable Stores update
 //     only their in-memory map and coalesce the disk/SSM write to at most once
-//     per flush interval. A crash within that interval leaves the persisted
-//     floor behind this in-memory committed value.
+//     per flush interval. A crash before the next flush leaves the persisted
+//     floor behind this in-memory committed value — about one flush interval
+//     under a steady stream, but longer if commits go idle while dirty.
 //
 // So the on-disk resume floor can lag committed by both the in-flight span and
-// up to one flush interval; a crash re-delivers everything after that persisted
-// floor, not everything after committed. Graceful shutdown closes the store,
-// whose final flush collapses layer 2; only an abrupt crash exposes the window.
+// the unflushed-commit window (about one flush interval under a steady stream);
+// a crash re-delivers everything after that persisted floor, not everything
+// after committed. Graceful shutdown closes the store, whose final flush
+// collapses layer 2; only an abrupt crash exposes the window.
 type commitTracker struct {
 	mu     sync.Mutex
 	feeds  map[string]*feedTracker

@@ -40,8 +40,8 @@ data:
     falcon:
       # Uncomment to provide Falcon Cloud alternatively use FALCON_CLOUD to override
       #cloud: us-1
-      {{- if .Values.falcon.cloud_region }}
-      cloud: {{ .Values.falcon.cloud_region }}
+      {{- if .Values.falcon.cloud }}
+      cloud: {{ .Values.falcon.cloud }}
       {{- end }}
 
       # Uncomment to provide OAuth Secret alternatively use FALCON_CLIENT_SECRET to override

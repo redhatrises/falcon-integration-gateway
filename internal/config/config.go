@@ -13,6 +13,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"time"
 
@@ -45,6 +46,11 @@ type Config struct {
 	// Derived fields (computed in Load, not unmarshalled directly).
 	Backends                []string `mapstructure:"-"`
 	DetectionsExcludeClouds []string `mapstructure:"-"`
+
+	// ConfigFileUsed is the path of the config file that was actually read, or
+	// "" when none was found (pure defaults + env). It lets the cli layer report
+	// which file took effect without this package taking a logger dependency.
+	ConfigFileUsed string `mapstructure:"-"`
 }
 
 // GatewayConfig is the [gateway] section.
@@ -214,6 +220,7 @@ func Load(configPath string, flags *pflag.FlagSet) (*Config, error) {
 		// extensions and infers the codec from whichever it finds.
 		v.SetConfigName("config")
 		v.AddConfigPath("/etc/fig")
+		v.AddConfigPath("./config")
 		v.AddConfigPath(".")
 		if err := v.ReadInConfig(); err != nil {
 			// Tolerate a missing config file: proceed on code defaults + env.
@@ -229,13 +236,21 @@ func Load(configPath string, flags *pflag.FlagSet) (*Config, error) {
 		return nil, err
 	}
 
+	cfg.ConfigFileUsed = v.ConfigFileUsed()
+
 	// Derived fields: comma-split, trimmed. Empty string -> empty slice.
 	cfg.Backends = utils.SplitCSV(cfg.Gateway.Backends)
 	cfg.DetectionsExcludeClouds = utils.SplitCSV(cfg.Events.DetectionsExcludeClouds)
 
-	// Derived duration: parse the raw cache ttl string. A parse failure leaves
-	// the duration zero; Validate is authoritative and reports the bad value.
-	cfg.Cache.TTLDuration, _ = time.ParseDuration(cfg.Cache.TTL)
+	// Derived duration: parse the raw cache ttl string. A malformed value fails
+	// the load here rather than silently resolving to a zero TTL for a caller
+	// that skips Validate; Validate re-checks it (and the non-negative bound) for
+	// callers that build a Config directly.
+	ttl, err := time.ParseDuration(cfg.Cache.TTL)
+	if err != nil {
+		return nil, fmt.Errorf("config: invalid cache.ttl %q: %w", cfg.Cache.TTL, err)
+	}
+	cfg.Cache.TTLDuration = ttl
 
 	return &cfg, nil
 }
@@ -287,7 +302,7 @@ var settings = []setting{
 	{"events.offset", "offset", "EVENTS_OFFSET", uint64(0), "stream offset to resume from (mutually exclusive with start_from_newest)", groupEvents},
 	{"events.start_from_newest", "start-from-newest", "EVENTS_START_FROM_NEWEST", false, "start from the newest event on the initial connection", groupEvents},
 	{"events.offset_store", "offset-store", "", "file", "offset store backend", groupEvents},
-	{"events.offset_store_path", "offset-store-path", "", "offsets.json", "path to the file offset store, or the SSM parameter name when offset_store=ssm", groupEvents},
+	{"events.offset_store_path", "offset-store-path", "", "/etc/fig/offsets.json", "path to the file offset store, or the SSM parameter name when offset_store=ssm", groupEvents},
 	{"events.offset_store_region", "offset-store-region", "", "", "AWS region for the ssm offset store", groupEvents},
 	{"events.delivery_failure", "delivery-failure", "", "drop", "delivery-failure handling mode (drop|discard|block; dlq is a deprecated alias for drop)", groupEvents},
 	{"events.pending_warn_threshold", "pending-warn-threshold", "", 1000, "warn when a feed holds more than this many uncommitted offsets (0 disables)", groupEvents},

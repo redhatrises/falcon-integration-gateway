@@ -32,6 +32,12 @@ func NewFile(path string) (*File, error) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("offset: creating store directory %q: %w", dir, err)
 		}
+		// Probe writability now so a non-writable directory fails at startup
+		// rather than on the first offset flush mid-stream, which would silently
+		// strand the resume watermark.
+		if err := probeWritable(dir); err != nil {
+			return nil, err
+		}
 	}
 
 	offsets := make(map[string]uint64)
@@ -57,6 +63,21 @@ func NewFile(path string) (*File, error) {
 		Persist:  f.persist,
 	})
 	return f, nil
+}
+
+// probeWritable confirms dir accepts a new file by creating and removing a
+// temporary one. It surfaces a permission or read-only-filesystem problem at
+// construction, where the caller can fail startup, instead of on the first
+// atomic write during streaming.
+func probeWritable(dir string) error {
+	probe, err := os.CreateTemp(dir, ".fig-offset-probe-*")
+	if err != nil {
+		return fmt.Errorf("offset: store directory %q is not writable: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
 }
 
 // Load returns the current in-memory offset for feedID (hydrated from disk on

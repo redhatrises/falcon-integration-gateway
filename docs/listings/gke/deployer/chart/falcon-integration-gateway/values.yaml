@@ -10,7 +10,7 @@ cloud:
 falcon:
   client_id:
   client_secret:
-  cloud_region:
+  cloud:
 
   integration_gateway:
     # Configure number of threads that process Falcon Events

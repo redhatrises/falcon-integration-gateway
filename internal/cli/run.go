@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -312,10 +313,18 @@ func serveMetrics(ctx context.Context, addr string, logger *slog.Logger) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Bind before announcing so the "listening" line prints only on a live
+	// socket; a bind failure returns here with the address for context instead
+	// of racing a log line against a doomed listener.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("metrics server listen %s: %w", addr, err)
+	}
+	logger.Info("metrics server listening", "addr", addr)
+
 	serveErr := make(chan error, 1)
 	go func() {
-		logger.Info("metrics server listening", "addr", addr)
-		serveErr <- srv.ListenAndServe()
+		serveErr <- srv.Serve(ln)
 	}()
 
 	select {
@@ -323,12 +332,12 @@ func serveMetrics(ctx context.Context, addr string, logger *slog.Logger) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), metricsShutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			return err
+			return fmt.Errorf("metrics server shutdown: %w", err)
 		}
 		return nil
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+			return fmt.Errorf("metrics server: %w", err)
 		}
 		return nil
 	}

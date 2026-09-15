@@ -376,6 +376,17 @@ func TestCacheEnvOverride(t *testing.T) {
 	}
 }
 
+func TestCacheTTLInvalidLoadError(t *testing.T) {
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	t.Setenv("CACHE_TTL", "nonsense")
+
+	if _, err := Load("", nil); err == nil {
+		t.Fatalf("Load() = nil error, want error for invalid cache.ttl")
+	}
+}
+
 func TestWorkspaceOneTLSVerifyEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
@@ -438,12 +449,12 @@ func TestValidateCredentialsStore(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "ssm missing region",
+			name: "ssm blank region defers to AWS chain",
 			mutate: func(c *Config) {
 				c.Credentials.Store = "ssm"
 				c.SSM = SSMConfig{SSMClientID: "/fig/id", SSMClientSecret: "/fig/secret"}
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "ssm missing param names",

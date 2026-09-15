@@ -44,7 +44,7 @@ file.
   ```bash
   export FALCON_CLIENT_ID=<your api falcon client id>
   export FALCON_CLIENT_SECRET=<your api falcon client secret>
-  export FALCON_CLOUD_REGION=<your api falcon client region>
+  export FALCON_CLOUD=<your api falcon client region>
   export CLOUDTRAIL_LAKE_CHANNEL_ARN=<your cloudtrail lake channel arn>
   export CLOUDTRAIL_LAKE_REGION=<your aws region aligning with channel>
   export FALCON_APPLICATION_ID=<your unique application stream identifier>
@@ -65,7 +65,7 @@ file.
       helm install falcon-fig crowdstrike/falcon-integration-gateway -n falcon-integration-gateway --create-namespace \
         --set falcon.client_id=$FALCON_CLIENT_ID \
         --set falcon.client_secret=$FALCON_CLIENT_SECRET \
-        --set falcon.cloud_region=$FALCON_CLOUD_REGION \
+        --set falcon.cloud=$FALCON_CLOUD \
         --set falcon.integration_gateway.application_id=$FALCON_APPLICATION_ID \
         --set push.cloudtrail_lake.enabled=true \
         --set push.cloudtrail_lake.channel_arn=$CLOUDTRAIL_LAKE_CHANNEL_ARN \

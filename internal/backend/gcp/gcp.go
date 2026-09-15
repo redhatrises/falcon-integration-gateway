@@ -82,9 +82,9 @@ func (r *Runtime) resolveOrgSource(ctx context.Context, projectNumber string) (o
 // resolves the host's GCP project number, walks to the enclosing organization
 // and its FIG Source, looks up the SCC resource name of the originating asset,
 // builds the Finding, and submits it. Duplicate submits are collapsed server-side
-// by the SCC Finding API, which is queried per Source for the finding's dedup id
-// before a create, so a retry or a cross-run repeat does not create a second
-// finding.
+// by the SCC Finding API, which is queried per Source for a finding with the same
+// resource name before a create, so a retry or a cross-run repeat does not create
+// a second finding.
 //
 // Several conditions are a deliberate skip rather than a delivery failure, each
 // logging a warning and returning a backend.DropError so the pipeline records

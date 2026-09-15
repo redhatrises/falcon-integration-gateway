@@ -170,8 +170,11 @@ func (c *Config) validateBackends() []error {
 
 // validateCredentialsStore checks the external credential-store overlay. An
 // empty store means Falcon credentials come from env/flags and needs nothing
-// else; "ssm" and "secrets_manager" each require their region and lookup fields
-// so a startup credential fetch cannot fail on a missing parameter.
+// else; "ssm" and "secrets_manager" each require their lookup fields so a
+// startup credential fetch cannot fail on a missing parameter. region is left
+// optional: a blank region defers to the AWS default region chain
+// (environment, shared config, instance profile, IRSA), which IMDS/IRSA
+// deployments rely on.
 func (c *Config) validateCredentialsStore() []error {
 	var errs []error
 
@@ -184,12 +187,10 @@ func (c *Config) validateCredentialsStore() []error {
 		// Credentials come from the env/flag layers; nothing to validate.
 	case "ssm":
 		errs = appendIfEmpty(errs, nonEmpty,
-			field{"ssm.region", c.SSM.Region},
 			field{"ssm.ssm_client_id", c.SSM.SSMClientID},
 			field{"ssm.ssm_client_secret", c.SSM.SSMClientSecret})
 	case "secrets_manager":
 		errs = appendIfEmpty(errs, nonEmpty,
-			field{"secrets_manager.region", c.SecretsManager.Region},
 			field{"secrets_manager.secrets_manager_secret_name", c.SecretsManager.SecretsManagerSecretName},
 			field{"secrets_manager.secrets_manager_client_id_key", c.SecretsManager.SecretsManagerClientIDKey},
 			field{"secrets_manager.secrets_manager_client_secret_key", c.SecretsManager.SecretsManagerClientSecretKey})
